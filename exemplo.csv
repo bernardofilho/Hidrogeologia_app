@@ -1,0 +1,17 @@
+projeto,sondagem_nome,latitude,longitude,altitude,nivel_agua,profundidade_inicial,profundidade_final,descricao,classificacao,tipo_aquifero
+Projeto Aquífero Piloto,PZ-01,-15.793889,-47.882778,1085.20,6.40,0.00,3.00,"Argila marrom-avermelhada, plástica, úmida e compacta",Argila,Aquitarde
+Projeto Aquífero Piloto,PZ-01,-15.793889,-47.882778,1085.20,6.40,3.00,10.00,"Areia fina amarela, quartzosa, pouco argilosa e medianamente compacta",Areia Fina,Livre
+Projeto Aquífero Piloto,PZ-01,-15.793889,-47.882778,1085.20,6.40,10.00,18.00,"Areia grossa quartzosa, mal selecionada, com grânulos dispersos",Areia Grossa,Livre
+Projeto Aquífero Piloto,PZ-01,-15.793889,-47.882778,1085.20,6.40,18.00,23.00,"Rocha alterada, fraturada, com matriz areno-siltosa",Rocha Alterada,Semiconfinado
+Projeto Aquífero Piloto,PZ-01,-15.793889,-47.882778,1085.20,6.40,23.00,30.00,"Rocha sã cinza, muito resistente e pouco fraturada",Rocha Sã,Aquífugo
+Projeto Aquífero Piloto,PZ-02,-15.794500,-47.879200,1081.70,5.80,0.00,4.00,"Argila marrom, plástica, úmida e com concreções ferruginosas",Argila,Aquitarde
+Projeto Aquífero Piloto,PZ-02,-15.794500,-47.879200,1081.70,5.80,4.00,11.00,"Areia fina amarela, quartzosa, homogênea e pouco compacta",Areia Fina,Livre
+Projeto Aquífero Piloto,PZ-02,-15.794500,-47.879200,1081.70,5.80,11.00,19.00,"Areia grossa com grânulos, úmida e de alta permeabilidade aparente",Areia Grossa,Livre
+Projeto Aquífero Piloto,PZ-02,-15.794500,-47.879200,1081.70,5.80,19.00,25.00,"Rocha alterada amarelada, fraturada e parcialmente decomposta",Rocha Alterada,Semiconfinado
+Projeto Aquífero Piloto,PZ-02,-15.794500,-47.879200,1081.70,5.80,25.00,32.00,"Rocha sã cinza-escura, maciça e muito resistente",Rocha Sã,Aquífugo
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,0.00,2.00,"Silte cinza-claro, pouco plástico, úmido e homogêneo",Silte,Aquitarde
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,2.00,7.00,"Argila vermelha, plástica, úmida e compacta",Argila,Aquitarde
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,7.00,14.00,"Areia fina amarela, quartzosa e medianamente selecionada",Areia Fina,Livre
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,14.00,22.00,"Areia grossa com cascalho fino, saturada e pouco compacta",Areia Grossa,Livre
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,22.00,27.00,"Rocha alterada castanha, muito fraturada e friável",Rocha Alterada,Semiconfinado
+Projeto Aquífero Piloto,PZ-03,-15.796100,-47.875900,1078.40,4.90,27.00,35.00,"Rocha sã cinza, maciça, resistente e localmente fraturada",Rocha Sã,Aquífugo
