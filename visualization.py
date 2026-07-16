@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import math
+import textwrap
 from typing import Any
 
 import folium
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from pyproj import CRS, Geod
 from scipy.interpolate import interp1d
 
 PADROES_ABNT = {
@@ -16,12 +18,18 @@ PADROES_ABNT = {
     "Areia Fina": {"cor": "#F4D03F", "padrao": "."},
     "Areia Grossa": {"cor": "#F5B041", "padrao": "x"},
     "Cascalho": {"cor": "#A9A9A9", "padrao": "+"},
-    "Rocha Sã": {"cor": "#2C3E50", "padrao": "|"},
+    "Rocha S\u00e3": {"cor": "#2C3E50", "padrao": "|"},
     "Rocha Alterada": {"cor": "#7F8C8D", "padrao": "-"},
     "Silte": {"cor": "#BFC9CA", "padrao": "o"},
 }
 
 PADROES_NATIVOS_PLOTLY = {"", "/", "\\", "x", "-", "|", "+", "."}
+
+CORES_ZONAS_HIDRICAS = {
+    "Zona vadosa": "#F9E79F",
+    "Zona saturada": "#AED6F1",
+    "Indeterminada": "#E5E7E9",
+}
 
 CORES_MARCADORES = [
     "blue",
@@ -36,18 +44,36 @@ CORES_MARCADORES = [
     "gray",
 ]
 
+GEOD_SIRGAS = Geod(ellps="GRS80")
+
 
 def _padrao_nativo_plotly(padrao: str) -> str:
-    """Retorna apenas padrões aceitos nativamente pelo Plotly."""
+    """Retorna apenas padroes aceitos nativamente pelo Plotly."""
     return padrao if padrao in PADROES_NATIVOS_PLOTLY else ""
+
+
+def _quebrar_texto(texto: Any, largura: int = 62) -> str:
+    """Quebra texto longo para melhorar a leitura na imagem estatica."""
+    conteudo = "" if texto is None else str(texto).strip()
+    if not conteudo:
+        return "-"
+    return "<br>".join(
+        textwrap.wrap(
+            conteudo,
+            width=largura,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+    )
 
 
 def _adicionar_circulos_silte_perfil(
     figura: go.Figure,
     profundidade_inicial: float,
     profundidade_final: float,
+    coluna: int,
 ) -> None:
-    """Simula o padrão circular de silte, que não existe no enumerador do Plotly."""
+    """Simula o padrao circular de silte no perfil individual."""
     espessura = profundidade_final - profundidade_inicial
     espacamento_vertical = max(espessura / 6, 0.25)
     niveis = np.arange(
@@ -80,12 +106,12 @@ def _adicionar_circulos_silte_perfil(
             hoverinfo="skip",
         ),
         row=1,
-        col=1,
+        col=coluna,
     )
 
 
 def criar_mapa_sondagens(sondagens: pd.DataFrame) -> folium.Map:
-    """Cria mapa Folium com marcadores das sondagens em graus decimais."""
+    """Cria mapa Folium a partir das coordenadas canonicas EPSG:4674."""
     if sondagens.empty:
         return folium.Map(
             location=[-14.2350, -51.9253],
@@ -98,7 +124,7 @@ def criar_mapa_sondagens(sondagens: pd.DataFrame) -> folium.Map:
     centro_longitude = float(sondagens["longitude"].mean())
     mapa = folium.Map(
         location=[centro_latitude, centro_longitude],
-        zoom_start=7 if len(sondagens) > 1 else 12,
+        zoom_start=7 if len(sondagens) > 1 else 13,
         tiles="OpenStreetMap",
         control_scale=True,
     )
@@ -109,24 +135,39 @@ def criar_mapa_sondagens(sondagens: pd.DataFrame) -> folium.Map:
         for indice, projeto_id in enumerate(projetos)
     }
 
+    limites: list[list[float]] = []
     for _, sondagem in sondagens.iterrows():
+        latitude = float(sondagem["latitude"])
+        longitude = float(sondagem["longitude"])
+        limites.append([latitude, longitude])
+
         nivel_agua = sondagem.get("nivel_agua_estatico")
         texto_nivel = (
-            "Não informado"
-            if pd.isna(nivel_agua)
+            "Nao informado"
+            if nivel_agua is None or pd.isna(nivel_agua)
             else f"{float(nivel_agua):.2f} m"
         )
+        epsg = int(sondagem.get("crs_entrada") or 4674)
+        x = float(sondagem.get("coordenada_x") or longitude)
+        y = float(sondagem.get("coordenada_y") or latitude)
+        status = html.escape(str(sondagem.get("status") or ""))
+
         conteudo = (
             f"<b>{html.escape(str(sondagem['nome_furo']))}</b><br>"
             f"Projeto: {html.escape(str(sondagem['projeto_nome']))}<br>"
-            f"Profundidade: {float(sondagem['profundidade_total']):.2f} m<br>"
+            f"Status: {status}<br>"
+            f"CRS original: EPSG:{epsg}<br>"
+            f"X: {x:.3f}<br>Y: {y:.3f}<br>"
+            f"SIRGAS 2000 geografico: {latitude:.8f}, {longitude:.8f}<br>"
+            f"Profundidade executada: {float(sondagem['profundidade_atual']):.2f} m<br>"
+            f"Profundidade final/meta: {float(sondagem['profundidade_total']):.2f} m<br>"
             f"NA: {texto_nivel}<br>"
             f"Altitude: {float(sondagem['altitude']):.2f} m"
         )
         folium.Marker(
-            location=[float(sondagem["latitude"]), float(sondagem["longitude"])],
-            tooltip=f"{sondagem['nome_furo']} — {sondagem['projeto_nome']}",
-            popup=folium.Popup(conteudo, max_width=320),
+            location=[latitude, longitude],
+            tooltip=f"{sondagem['nome_furo']} - {sondagem['projeto_nome']}",
+            popup=folium.Popup(conteudo, max_width=380),
             icon=folium.Icon(
                 color=cores_por_projeto[sondagem["projeto_id"]],
                 icon="tint",
@@ -134,8 +175,49 @@ def criar_mapa_sondagens(sondagens: pd.DataFrame) -> folium.Map:
             ),
         ).add_to(mapa)
 
+    if len(limites) > 1:
+        mapa.fit_bounds(limites, padding=(35, 35))
     folium.LayerControl(collapsed=True).add_to(mapa)
     return mapa
+
+
+def _adicionar_linha_na_perfil(
+    figura: go.Figure,
+    nivel_agua: float,
+) -> None:
+    """Desenha o NA sem usar anotacoes automaticas que podem sobrepor textos."""
+    referencias = [
+        ("x domain", "y"),
+        ("x2 domain", "y2"),
+        ("x3 domain", "y3"),
+    ]
+    for xref, yref in referencias:
+        figura.add_shape(
+            type="line",
+            x0=0,
+            x1=1,
+            y0=nivel_agua,
+            y1=nivel_agua,
+            xref=xref,
+            yref=yref,
+            line=dict(color="#C0392B", width=2, dash="dash"),
+            layer="above",
+        )
+
+    figura.add_annotation(
+        x=0.02,
+        y=nivel_agua,
+        xref="x2 domain",
+        yref="y2",
+        text=f"NA = {nivel_agua:.2f} m",
+        showarrow=False,
+        xanchor="left",
+        yanchor="bottom",
+        bgcolor="rgba(255,255,255,0.88)",
+        bordercolor="#C0392B",
+        borderwidth=1,
+        font=dict(size=11, color="#922B21"),
+    )
 
 
 def criar_perfil_litologico(
@@ -144,28 +226,160 @@ def criar_perfil_litologico(
     coletas: pd.DataFrame,
     voc: pd.DataFrame,
 ) -> go.Figure:
-    """Monta o perfil litológico individual e a curva de VOC em subplots."""
-    figura = make_subplots(
-        rows=1,
-        cols=2,
-        shared_yaxes=True,
-        horizontal_spacing=0.09,
-        column_widths=[0.42, 0.58],
-        subplot_titles=("Coluna litológica", "Concentração de VOC"),
+    """Monta perfil, curva de VOC e tabela de descricoes sem sobreposicao."""
+    profundidade_total = float(sondagem["profundidade_total"])
+    if profundidade_total <= 0 and not camadas.empty:
+        profundidade_total = float(camadas["profundidade_final"].max())
+    profundidade_total = max(profundidade_total, 0.1)
+
+    nivel_bruto = sondagem.get("nivel_agua_estatico")
+    nivel_agua = (
+        None
+        if nivel_bruto is None or pd.isna(nivel_bruto)
+        else min(max(float(nivel_bruto), 0.0), profundidade_total)
     )
 
+    quantidade_camadas = max(len(camadas), 1)
+    altura_grafico = max(560, min(1180, int(profundidade_total * 24)))
+    altura_tabela = max(220, min(920, 78 + quantidade_camadas * 62))
+    altura_total = altura_grafico + altura_tabela + 120
+    fracao_grafico = altura_grafico / (altura_grafico + altura_tabela)
+
+    figura = make_subplots(
+        rows=2,
+        cols=3,
+        specs=[
+            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}],
+            [{"type": "table", "colspan": 3}, None, None],
+        ],
+        shared_yaxes=True,
+        horizontal_spacing=0.055,
+        vertical_spacing=0.075,
+        column_widths=[0.16, 0.34, 0.50],
+        row_heights=[fracao_grafico, 1 - fracao_grafico],
+        subplot_titles=(
+            "Condi\u00e7\u00e3o h\u00eddrica",
+            "Coluna litol\u00f3gica",
+            "Concentra\u00e7\u00e3o de VOC",
+        ),
+    )
+
+    if nivel_agua is None:
+        figura.add_trace(
+            go.Bar(
+                x=[1.0],
+                y=[profundidade_total / 2],
+                width=[profundidade_total],
+                base=0,
+                orientation="h",
+                name="Condi\u00e7\u00e3o h\u00eddrica indeterminada",
+                marker_color=CORES_ZONAS_HIDRICAS["Indeterminada"],
+                marker_line_color="#7B7D7D",
+                marker_line_width=1,
+                hovertemplate=(
+                    "NA nao informado<br>"
+                    f"Intervalo: 0,00-{profundidade_total:.2f} m"
+                    "<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=1,
+        )
+        figura.add_annotation(
+            x=0.5,
+            y=profundidade_total / 2,
+            text="NA nao<br>informado",
+            showarrow=False,
+            font=dict(size=11, color="#566573"),
+            row=1,
+            col=1,
+        )
+    else:
+        espessura_vadosa = nivel_agua
+        espessura_saturada = max(0.0, profundidade_total - nivel_agua)
+        if espessura_vadosa > 1e-9:
+            figura.add_trace(
+                go.Bar(
+                    x=[1.0],
+                    y=[espessura_vadosa / 2],
+                    width=[espessura_vadosa],
+                    base=0,
+                    orientation="h",
+                    name="Zona vadosa",
+                    legendgroup="condicao_hidrica",
+                    marker_color=CORES_ZONAS_HIDRICAS["Zona vadosa"],
+                    marker_line_color="#B7950B",
+                    marker_line_width=1,
+                    hovertemplate=(
+                        "<b>Zona vadosa</b><br>"
+                        f"Intervalo: 0,00-{nivel_agua:.2f} m<br>"
+                        f"Espessura: {espessura_vadosa:.2f} m"
+                        "<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=1,
+            )
+            if espessura_vadosa >= max(0.8, profundidade_total * 0.08):
+                figura.add_annotation(
+                    x=0.5,
+                    y=espessura_vadosa / 2,
+                    text="Zona<br>vadosa",
+                    showarrow=False,
+                    font=dict(size=11, color="#6E4C1E"),
+                    row=1,
+                    col=1,
+                )
+
+        if espessura_saturada > 1e-9:
+            figura.add_trace(
+                go.Bar(
+                    x=[1.0],
+                    y=[nivel_agua + espessura_saturada / 2],
+                    width=[espessura_saturada],
+                    base=0,
+                    orientation="h",
+                    name="Trecho saturado",
+                    legendgroup="condicao_hidrica",
+                    marker_color=CORES_ZONAS_HIDRICAS["Zona saturada"],
+                    marker_line_color="#2E86C1",
+                    marker_line_width=1,
+                    hovertemplate=(
+                        "<b>Trecho saturado</b><br>"
+                        f"Intervalo: {nivel_agua:.2f}-{profundidade_total:.2f} m<br>"
+                        f"Espessura: {espessura_saturada:.2f} m"
+                        "<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=1,
+            )
+            if espessura_saturada >= max(0.8, profundidade_total * 0.08):
+                figura.add_annotation(
+                    x=0.5,
+                    y=nivel_agua + espessura_saturada / 2,
+                    text="Trecho<br>saturado",
+                    showarrow=False,
+                    font=dict(size=11, color="#154360"),
+                    row=1,
+                    col=1,
+                )
+
+    camadas_ordenadas = camadas.sort_values("profundidade_inicial").copy()
     classificacoes_na_legenda: set[str] = set()
-    for _, camada in camadas.sort_values("profundidade_inicial").iterrows():
-        profundidade_inicial = float(camada["profundidade_inicial"])
-        profundidade_final = float(camada["profundidade_final"])
-        espessura = profundidade_final - profundidade_inicial
-        centro = (profundidade_inicial + profundidade_final) / 2
+    for _, camada in camadas_ordenadas.iterrows():
+        inicio = float(camada["profundidade_inicial"])
+        final = float(camada["profundidade_final"])
+        espessura = final - inicio
+        centro = (inicio + final) / 2
         classificacao = str(camada["classificacao"])
         estilo = PADROES_ABNT.get(
-            classificacao, {"cor": "#D5D8DC", "padrao": ""}
+            classificacao,
+            {"cor": "#D5D8DC", "padrao": ""},
         )
         mostrar_legenda = classificacao not in classificacoes_na_legenda
         classificacoes_na_legenda.add(classificacao)
+        zona = str(camada.get("zona_hidrica") or "Indeterminada")
 
         figura.add_trace(
             go.Bar(
@@ -186,35 +400,32 @@ def criar_perfil_litologico(
                 marker_pattern_solidity=0.18,
                 customdata=[
                     [
-                        profundidade_inicial,
-                        profundidade_final,
+                        inicio,
+                        final,
                         camada["descricao_tatil_visual"],
                         camada["tipo_aquifero"],
                         camada["cota_topo"],
                         camada["cota_base"],
+                        zona,
                     ]
                 ],
                 hovertemplate=(
                     "<b>%{fullData.name}</b><br>"
                     "Topo: %{customdata[0]:.2f} m<br>"
                     "Base: %{customdata[1]:.2f} m<br>"
-                    "Descrição: %{customdata[2]}<br>"
-                    "Unidade hidrogeológica: %{customdata[3]}<br>"
+                    "Descri\u00e7\u00e3o: %{customdata[2]}<br>"
+                    "Unidade hidroestratigr\u00e1fica: %{customdata[3]}<br>"
+                    "Condi\u00e7\u00e3o h\u00eddrica: %{customdata[6]}<br>"
                     "Cota do topo: %{customdata[4]:.2f} m<br>"
                     "Cota da base: %{customdata[5]:.2f} m"
                     "<extra></extra>"
                 ),
             ),
             row=1,
-            col=1,
+            col=2,
         )
-
         if estilo["padrao"] == "o":
-            _adicionar_circulos_silte_perfil(
-                figura,
-                profundidade_inicial,
-                profundidade_final,
-            )
+            _adicionar_circulos_silte_perfil(figura, inicio, final, coluna=2)
 
     if not coletas.empty:
         figura.add_trace(
@@ -232,7 +443,7 @@ def criar_perfil_litologico(
                 hovertemplate="Coleta em %{y:.2f} m<extra></extra>",
             ),
             row=1,
-            col=1,
+            col=2,
         )
 
     if not voc.empty:
@@ -247,45 +458,31 @@ def criar_perfil_litologico(
                 marker=dict(size=8, symbol="circle"),
                 hovertemplate=(
                     "Profundidade: %{y:.2f} m<br>"
-                    "Concentração: %{x:.4g}<extra></extra>"
+                    "Concentra\u00e7\u00e3o: %{x:.4g}<extra></extra>"
                 ),
             ),
             row=1,
-            col=2,
+            col=3,
         )
     else:
         figura.add_annotation(
-            text="Sem medições de VOC",
+            text="Sem medicoes de VOC",
             x=0.5,
             y=0.5,
-            xref="x2 domain",
-            yref="y2 domain",
+            xref="x3 domain",
+            yref="y3 domain",
             showarrow=False,
             font=dict(color="#6C757D"),
         )
 
-    nivel_agua = sondagem.get("nivel_agua_estatico")
-    if nivel_agua is not None and not pd.isna(nivel_agua):
-        nivel_agua = float(nivel_agua)
-        for coluna in (1, 2):
-            figura.add_hline(
-                y=nivel_agua,
-                line_dash="dash",
-                line_color="#C0392B",
-                line_width=2,
-                annotation_text=(
-                    f"NA = {nivel_agua:.2f} m" if coluna == 1 else None
-                ),
-                annotation_position="top left",
-                row=1,
-                col=coluna,
-            )
+    if nivel_agua is not None:
+        _adicionar_linha_na_perfil(figura, nivel_agua)
         figura.add_trace(
             go.Scatter(
                 x=[1.08],
                 y=[nivel_agua],
                 mode="markers",
-                name="Nível d'água",
+                name="N\u00edvel d'\u00e1gua",
                 marker=dict(
                     symbol="triangle-down",
                     size=14,
@@ -295,10 +492,19 @@ def criar_perfil_litologico(
                 hovertemplate=f"NA: {nivel_agua:.2f} m<extra></extra>",
             ),
             row=1,
-            col=1,
+            col=2,
         )
 
-    profundidade_total = float(sondagem["profundidade_total"])
+    figura.update_xaxes(
+        range=[0, 1.0],
+        showticklabels=False,
+        showgrid=False,
+        zeroline=False,
+        fixedrange=True,
+        title_text="Satura\u00e7\u00e3o",
+        row=1,
+        col=1,
+    )
     figura.update_xaxes(
         range=[0, 1.16],
         showticklabels=False,
@@ -307,98 +513,165 @@ def criar_perfil_litologico(
         fixedrange=True,
         title_text="Litologia",
         row=1,
-        col=1,
+        col=2,
     )
     figura.update_xaxes(
-        title_text="Concentração (mg/L ou ppm)",
+        title_text="Concentra\u00e7\u00e3o (mg/L ou ppm)",
         rangemode="tozero",
         showgrid=True,
         gridcolor="#E5E7E9",
         row=1,
-        col=2,
+        col=3,
     )
-    figura.update_yaxes(
-        title_text="Profundidade (m)",
-        range=[profundidade_total, 0],
-        autorange=False,
-        showgrid=True,
-        gridcolor="#E5E7E9",
-        row=1,
+    for coluna in (1, 2, 3):
+        figura.update_yaxes(
+            title_text="Profundidade (m)" if coluna == 1 else None,
+            range=[profundidade_total, 0],
+            autorange=False,
+            showgrid=True,
+            gridcolor="#E5E7E9",
+            row=1,
+            col=coluna,
+        )
+
+    intervalos = [
+        f"{float(linha['profundidade_inicial']):.2f}-{float(linha['profundidade_final']):.2f} m"
+        for _, linha in camadas_ordenadas.iterrows()
+    ]
+    classificacoes = [str(valor) for valor in camadas_ordenadas["classificacao"].tolist()]
+    descricoes = [
+        _quebrar_texto(valor, largura=72)
+        for valor in camadas_ordenadas["descricao_tatil_visual"].tolist()
+    ]
+    unidades = [
+        _quebrar_texto(valor, largura=28)
+        for valor in camadas_ordenadas["tipo_aquifero"].tolist()
+    ]
+    zonas = [
+        _quebrar_texto(valor, largura=28)
+        for valor in camadas_ordenadas.get(
+            "zona_hidrica",
+            pd.Series(["Indeterminada"] * len(camadas_ordenadas)),
+        ).tolist()
+    ]
+    preenchimentos = [
+        "#F8F9F9" if indice % 2 == 0 else "#EEF2F3"
+        for indice in range(len(camadas_ordenadas))
+    ]
+
+    figura.add_trace(
+        go.Table(
+            columnwidth=[0.13, 0.15, 0.37, 0.17, 0.18],
+            header=dict(
+                values=[
+                    "<b>Intervalo</b>",
+                    "<b>Litologia</b>",
+                    "<b>Descri\u00e7\u00e3o t\u00e1til-visual</b>",
+                    "<b>Unidade hidroestratigr\u00e1fica</b>",
+                    "<b>Condi\u00e7\u00e3o h\u00eddrica</b>",
+                ],
+                fill_color="#D6EAF8",
+                line_color="#AAB7B8",
+                align=["center", "left", "left", "left", "left"],
+                font=dict(size=11, color="#1B2631"),
+                height=32,
+            ),
+            cells=dict(
+                values=[intervalos, classificacoes, descricoes, unidades, zonas],
+                fill_color=[preenchimentos] * 5,
+                line_color="#D5D8DC",
+                align=["center", "left", "left", "left", "left"],
+                font=dict(size=10, color="#1B2631"),
+                height=58,
+            ),
+        ),
+        row=2,
         col=1,
     )
-    figura.update_yaxes(
-        range=[profundidade_total, 0],
-        autorange=False,
-        showgrid=True,
-        gridcolor="#E5E7E9",
-        row=1,
-        col=2,
-    )
+
+    status = str(sondagem.get("status") or "")
+    epsg = int(sondagem.get("crs_entrada") or 4674)
     figura.update_layout(
-        title=(
-            f"Perfil litológico — {sondagem['nome_furo']} | "
-            f"Projeto: {sondagem['projeto_nome']}"
+        title=dict(
+            text=(
+                f"Perfil litol\u00f3gico e condi\u00e7\u00e3o h\u00eddrica - {sondagem['nome_furo']}"
+                f"<br><sup>Projeto: {sondagem['projeto_nome']} | "
+                f"Status: {status} | CRS de entrada: EPSG:{epsg}</sup>"
+            ),
+            x=0.5,
+            xanchor="center",
+            y=0.965,
+            yanchor="top",
+            font=dict(size=20),
         ),
-        height=max(680, int(profundidade_total * 18)),
+        height=altura_total,
         barmode="overlay",
         bargap=0,
         template="plotly_white",
         hovermode="closest",
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.08,
+            orientation="v",
+            yanchor="top",
+            y=0.96,
             xanchor="left",
-            x=0,
+            x=1.01,
+            bgcolor="rgba(255,255,255,0.86)",
+            bordercolor="#D5D8DC",
+            borderwidth=1,
+            font=dict(size=10),
         ),
-        margin=dict(l=70, r=40, t=130, b=60),
+        margin=dict(l=72, r=235, t=145, b=35),
     )
     return figura
 
 
-def distancia_haversine_metros(
-    latitude_1: float,
-    longitude_1: float,
-    latitude_2: float,
-    longitude_2: float,
+def distancia_entre_sondagens_metros(
+    sondagem_1: dict[str, Any],
+    sondagem_2: dict[str, Any],
 ) -> float:
-    """Calcula a distância geodésica aproximada entre dois pontos."""
-    raio_terra = 6_371_008.8
-    latitude_1_rad = math.radians(float(latitude_1))
-    latitude_2_rad = math.radians(float(latitude_2))
-    delta_latitude = math.radians(float(latitude_2) - float(latitude_1))
-    delta_longitude = math.radians(float(longitude_2) - float(longitude_1))
+    """Calcula distancia em CRS projetado comum ou geodesica SIRGAS 2000."""
+    epsg_1 = sondagem_1.get("crs_entrada")
+    epsg_2 = sondagem_2.get("crs_entrada")
+    if epsg_1 is not None and epsg_2 is not None and int(epsg_1) == int(epsg_2):
+        try:
+            crs = CRS.from_epsg(int(epsg_1))
+            if crs.is_projected:
+                x1 = float(sondagem_1["coordenada_x"])
+                y1 = float(sondagem_1["coordenada_y"])
+                x2 = float(sondagem_2["coordenada_x"])
+                y2 = float(sondagem_2["coordenada_y"])
+                return math.hypot(x2 - x1, y2 - y1)
+        except (TypeError, ValueError):
+            pass
 
-    termo = (
-        math.sin(delta_latitude / 2) ** 2
-        + math.cos(latitude_1_rad)
-        * math.cos(latitude_2_rad)
-        * math.sin(delta_longitude / 2) ** 2
+    longitude_1 = float(sondagem_1["longitude"])
+    latitude_1 = float(sondagem_1["latitude"])
+    longitude_2 = float(sondagem_2["longitude"])
+    latitude_2 = float(sondagem_2["latitude"])
+    _, _, distancia = GEOD_SIRGAS.inv(
+        longitude_1,
+        latitude_1,
+        longitude_2,
+        latitude_2,
     )
-    return 2 * raio_terra * math.asin(math.sqrt(termo))
+    return abs(float(distancia))
 
 
 def calcular_distancias_acumuladas(
     sondagens: list[dict[str, Any]],
 ) -> list[float]:
-    """Calcula distâncias acumuladas na ordem escolhida para a seção."""
+    """Calcula distancias acumuladas na ordem escolhida para a secao."""
     if not sondagens:
         return []
-
     distancias = [0.0]
     for indice in range(1, len(sondagens)):
-        anterior = sondagens[indice - 1]
-        atual = sondagens[indice]
-        trecho = distancia_haversine_metros(
-            anterior["latitude"],
-            anterior["longitude"],
-            atual["latitude"],
-            atual["longitude"],
+        trecho = distancia_entre_sondagens_metros(
+            sondagens[indice - 1],
+            sondagens[indice],
         )
         if trecho <= 0.01:
             raise ValueError(
-                "Há sondagens consecutivas com coordenadas coincidentes; "
-                "não é possível construir um eixo de distância confiável."
+                "Ha sondagens consecutivas com coordenadas coincidentes."
             )
         distancias.append(distancias[-1] + trecho)
     return distancias
@@ -407,6 +680,7 @@ def calcular_distancias_acumuladas(
 def _camadas_por_classificacao(
     camadas: pd.DataFrame,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Agrupa ocorrencias de uma classificacao na ordem vertical."""
     agrupadas: dict[str, list[dict[str, Any]]] = {}
     for _, camada in camadas.sort_values("profundidade_inicial").iterrows():
         classificacao = str(camada["classificacao"])
@@ -420,7 +694,7 @@ def _adicionar_circulos_silte_secao(
     cota_topo: np.ndarray,
     cota_base: np.ndarray,
 ) -> None:
-    """Adiciona círculos dentro de um corpo interpolado de silte."""
+    """Adiciona circulos dentro de um corpo interpolado de silte."""
     x_circulos: list[float] = []
     y_circulos: list[float] = []
     for posicao in range(2, len(x_interpolado) - 1, 4):
@@ -450,10 +724,9 @@ def _adicionar_circulos_silte_secao(
 def criar_secao_hidroestratigrafica(
     dados_sondagens: list[dict[str, Any]],
 ) -> go.Figure:
-    """Cria seção transversal conectando somente classes litológicas equivalentes."""
+    """Cria secao conectando somente classes litologicas equivalentes."""
     if len(dados_sondagens) < 2:
-        raise ValueError("Selecione pelo menos duas sondagens para gerar a seção.")
-
+        raise ValueError("Selecione pelo menos duas sondagens para gerar a secao.")
     if any(item["camadas"].empty for item in dados_sondagens):
         raise ValueError("Todas as sondagens selecionadas devem possuir camadas.")
 
@@ -536,14 +809,13 @@ def criar_secao_hidroestratigrafica(
                         ),
                         hovertemplate=(
                             f"<b>{classificacao}</b><br>"
-                            "Ocorrência: %{customdata[0]}<br>"
-                            "Trecho: %{customdata[1]} → %{customdata[2]}<br>"
-                            "Distância: %{x:.1f} m<br>"
+                            "Ocorr\u00eancia: %{customdata[0]}<br>"
+                            "Trecho: %{customdata[1]} -> %{customdata[2]}<br>"
+                            "Dist\u00e2ncia: %{x:.1f} m<br>"
                             "Cota: %{y:.2f} m<extra></extra>"
                         ),
                     )
                 )
-
                 if estilo["padrao"] == "o":
                     _adicionar_circulos_silte_secao(
                         figura,
@@ -553,18 +825,74 @@ def criar_secao_hidroestratigrafica(
                     )
 
     altitudes = [float(sondagem["altitude"]) for sondagem in sondagens]
+
+    zona_vadosa_na_legenda = False
+    for indice in range(len(sondagens) - 1):
+        esquerda = sondagens[indice]
+        direita = sondagens[indice + 1]
+        na_esquerda = esquerda.get("nivel_agua_estatico")
+        na_direita = direita.get("nivel_agua_estatico")
+        if (
+            na_esquerda is None
+            or pd.isna(na_esquerda)
+            or na_direita is None
+            or pd.isna(na_direita)
+        ):
+            continue
+
+        x_esquerda = distancias[indice]
+        x_direita = distancias[indice + 1]
+        x_interpolado = np.linspace(x_esquerda, x_direita, 80)
+        superficie = interp1d(
+            [x_esquerda, x_direita],
+            [float(esquerda["altitude"]), float(direita["altitude"])],
+            kind="linear",
+            assume_sorted=True,
+        )(x_interpolado)
+        cota_na = interp1d(
+            [x_esquerda, x_direita],
+            [
+                float(esquerda["altitude"]) - float(na_esquerda),
+                float(direita["altitude"]) - float(na_direita),
+            ],
+            kind="linear",
+            assume_sorted=True,
+        )(x_interpolado)
+        x_poligono = np.concatenate([x_interpolado, x_interpolado[::-1]])
+        y_poligono = np.concatenate([superficie, cota_na[::-1]])
+
+        figura.add_trace(
+            go.Scatter(
+                x=x_poligono,
+                y=y_poligono,
+                mode="lines",
+                line=dict(color="rgba(183,149,11,0.55)", width=0.7),
+                fill="toself",
+                fillcolor="rgba(249,231,159,0.34)",
+                name="Zona vadosa",
+                legendgroup="condicao_hidrica",
+                showlegend=not zona_vadosa_na_legenda,
+                hovertemplate=(
+                    "<b>Zona vadosa</b><br>"
+                    "Dist\u00e2ncia: %{x:.1f} m<br>"
+                    "Cota: %{y:.2f} m<extra></extra>"
+                ),
+            )
+        )
+        zona_vadosa_na_legenda = True
+
     figura.add_trace(
         go.Scatter(
             x=distancias,
             y=altitudes,
             mode="lines+markers+text",
-            name="Superfície do terreno",
+            name="Superf\u00edcie do terreno",
             line=dict(color="#196F3D", width=3),
             marker=dict(size=9, symbol="diamond"),
             text=[sondagem["nome_furo"] for sondagem in sondagens],
             textposition="top center",
             hovertemplate=(
-                "%{text}<br>Distância: %{x:.1f} m<br>"
+                "%{text}<br>Distancia: %{x:.1f} m<br>"
                 "Altitude: %{y:.2f} m<extra></extra>"
             ),
         )
@@ -573,28 +901,29 @@ def criar_secao_hidroestratigrafica(
     distancias_na: list[float] = []
     cotas_na: list[float] = []
     for distancia, sondagem in zip(distancias, sondagens):
-        nivel_agua = sondagem.get("nivel_agua_estatico")
-        if nivel_agua is not None and not pd.isna(nivel_agua):
+        nivel = sondagem.get("nivel_agua_estatico")
+        if nivel is not None and not pd.isna(nivel):
             distancias_na.append(distancia)
-            cotas_na.append(float(sondagem["altitude"]) - float(nivel_agua))
+            cotas_na.append(float(sondagem["altitude"]) - float(nivel))
 
     if len(distancias_na) >= 2:
-        interpolador_na = interp1d(
+        x_na = np.linspace(distancias_na[0], distancias_na[-1], 160)
+        y_na = interp1d(
             distancias_na,
             cotas_na,
             kind="linear",
             assume_sorted=True,
-        )
-        x_na = np.linspace(distancias_na[0], distancias_na[-1], 160)
+        )(x_na)
         figura.add_trace(
             go.Scatter(
                 x=x_na,
-                y=interpolador_na(x_na),
+                y=y_na,
                 mode="lines",
-                name="Nível d'água",
+                name="N\u00edvel d'\u00e1gua",
                 line=dict(color="#C0392B", width=2.5, dash="dash"),
                 hovertemplate=(
-                    "Distância: %{x:.1f} m<br>Cota do NA: %{y:.2f} m<extra></extra>"
+                    "Dist\u00e2ncia: %{x:.1f} m<br>"
+                    "Cota do NA: %{y:.2f} m<extra></extra>"
                 ),
             )
         )
@@ -604,27 +933,8 @@ def criar_secao_hidroestratigrafica(
                 y=cotas_na,
                 mode="markers",
                 name="NA nas sondagens",
-                marker=dict(
-                    color="#C0392B",
-                    size=11,
-                    symbol="triangle-down",
-                ),
+                marker=dict(color="#C0392B", size=11, symbol="triangle-down"),
                 showlegend=False,
-                hovertemplate="Cota do NA: %{y:.2f} m<extra></extra>",
-            )
-        )
-    elif len(distancias_na) == 1:
-        figura.add_trace(
-            go.Scatter(
-                x=distancias_na,
-                y=cotas_na,
-                mode="markers",
-                name="Nível d'água",
-                marker=dict(
-                    color="#C0392B",
-                    size=11,
-                    symbol="triangle-down",
-                ),
                 hovertemplate="Cota do NA: %{y:.2f} m<extra></extra>",
             )
         )
@@ -648,102 +958,43 @@ def criar_secao_hidroestratigrafica(
             line=dict(color="#34495E", width=1, dash="dot"),
             layer="above",
         )
-
-        for _, camada in item["camadas"].iterrows():
-            estilo = PADROES_ABNT.get(
-                str(camada["classificacao"]),
-                {"cor": "#D5D8DC", "padrao": ""},
-            )
-            cota_topo_local = float(camada["cota_topo"])
-            cota_base_local = float(camada["cota_base"])
-            figura.add_trace(
-                go.Scatter(
-                    x=[
-                        distancia - largura_furo,
-                        distancia + largura_furo,
-                        distancia + largura_furo,
-                        distancia - largura_furo,
-                    ],
-                    y=[
-                        cota_topo_local,
-                        cota_topo_local,
-                        cota_base_local,
-                        cota_base_local,
-                    ],
-                    mode="lines",
-                    line=dict(color="#17202A", width=1),
-                    fill="toself",
-                    fillcolor=estilo["cor"],
-                    fillpattern=dict(
-                        shape=_padrao_nativo_plotly(estilo["padrao"]),
-                        fillmode="overlay",
-                        fgcolor="#111111",
-                        bgcolor=estilo["cor"],
-                        solidity=0.16,
-                    ),
-                    showlegend=False,
-                    hovertemplate=(
-                        f"<b>{sondagem['nome_furo']}</b><br>"
-                        f"{camada['classificacao']}<br>"
-                        f"Cota do topo: {cota_topo_local:.2f} m<br>"
-                        f"Cota da base: {cota_base_local:.2f} m"
-                        "<extra></extra>"
-                    ),
-                )
-            )
-
-            if estilo["padrao"] == "o":
-                figura.add_trace(
-                    go.Scatter(
-                        x=[
-                            distancia - largura_furo * 0.45,
-                            distancia + largura_furo * 0.45,
-                            distancia - largura_furo * 0.45,
-                            distancia + largura_furo * 0.45,
-                        ],
-                        y=[
-                            cota_topo_local + (cota_base_local - cota_topo_local) * 0.30,
-                            cota_topo_local + (cota_base_local - cota_topo_local) * 0.30,
-                            cota_topo_local + (cota_base_local - cota_topo_local) * 0.70,
-                            cota_topo_local + (cota_base_local - cota_topo_local) * 0.70,
-                        ],
-                        mode="markers",
-                        marker=dict(
-                            symbol="circle-open",
-                            size=5,
-                            color="#111111",
-                            line=dict(width=1),
-                        ),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    )
-                )
+        figura.add_shape(
+            type="rect",
+            x0=distancia - largura_furo / 2,
+            x1=distancia + largura_furo / 2,
+            y0=float(sondagem["altitude"]) - float(sondagem["profundidade_total"]),
+            y1=float(sondagem["altitude"]),
+            line=dict(color="#17202A", width=1),
+            fillcolor="rgba(255,255,255,0.08)",
+            layer="above",
+        )
 
     figura.update_layout(
-        title="Perfil hidroestratigráfico — seção transversal",
-        xaxis_title="Distância acumulada ao longo da seção (m)",
+        title=dict(
+            text="Perfil hidroestratigr\u00e1fico - se\u00e7\u00e3o transversal",
+            x=0.5,
+            xanchor="center",
+            y=0.98,
+            yanchor="top",
+        ),
+        xaxis_title="Dist\u00e2ncia acumulada (m)",
         yaxis_title="Cota absoluta (m)",
         template="plotly_white",
         hovermode="closest",
-        height=760,
+        height=860,
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.04,
+            orientation="v",
+            yanchor="top",
+            y=0.96,
             xanchor="left",
-            x=0,
+            x=1.01,
+            bgcolor="rgba(255,255,255,0.86)",
+            bordercolor="#D5D8DC",
+            borderwidth=1,
+            font=dict(size=10),
         ),
-        margin=dict(l=80, r=40, t=120, b=70),
+        margin=dict(l=80, r=220, t=90, b=70),
     )
-    figura.update_xaxes(
-        range=[-amplitude_x * 0.025, distancias[-1] + amplitude_x * 0.025],
-        showgrid=True,
-        gridcolor="#E5E7E9",
-    )
-    figura.update_yaxes(
-        range=[menor_cota - 2, max(altitudes) + 4],
-        showgrid=True,
-        gridcolor="#E5E7E9",
-        zeroline=False,
-    )
+    figura.update_xaxes(showgrid=True, gridcolor="#E5E7E9")
+    figura.update_yaxes(showgrid=True, gridcolor="#E5E7E9")
     return figura

@@ -1,32 +1,44 @@
-# Descrição Litológica de Sondagens — versão web
+# Diario de Sondagem Hidrogeologica - versao web
 
-Aplicativo Streamlit para cadastro e visualização de sondagens hidrogeológicas, com SQLite, Pandas, Plotly e Folium, exibido diretamente em um componente HTML do Streamlit.
+Aplicativo Streamlit com SQLite, Pandas, Plotly, Folium, SciPy e PyProj.
 
-## Opção 1 — publicar no Streamlit Community Cloud
+## Alteracoes desta versao
 
-1. Crie um repositório no GitHub e envie todos os arquivos desta pasta, mantendo `.streamlit/config.toml`.
-2. Acesse o Streamlit Community Cloud e escolha **Create app**.
-3. Selecione o repositório, a branch e use `streamlit_app.py` como arquivo de entrada.
-4. Em **Advanced settings**, escolha Python 3.12.
-5. Clique em **Deploy**.
+- SIRGAS 2000 / UTM zona 23S (EPSG:31983) e o CRS padrao de entrada.
+- O usuario pode selecionar as zonas SIRGAS 2000 / UTM 18S a 25S, SIRGAS 2000 geografico, WGS 84 ou qualquer EPSG valido.
+- O banco guarda as coordenadas originais e tambem latitude/longitude normalizadas em SIRGAS 2000 geografico (EPSG:4674) para o mapa.
+- O fluxo segue a sequencia de uma sondagem: planejamento, inicio, intervalos, amostras/VOC/NA, conferencia e encerramento.
+- Intervalos em execucao sao persistidos na tabela `rascunhos_camadas`; o perfil final so e publicado depois da validacao integral.
+- A imagem do perfil possui legenda lateral e uma tabela inferior com todas as descricoes, eliminando a sobreposicao entre titulo, legenda e textos.
+- A linha de NA e desenhada sem anotacoes automaticas do Plotly, evitando o texto residual `new text`.
 
-Nesse modo, cada sessão do navegador recebe um banco SQLite separado. Use o painel lateral para baixar um backup `.db` e restaurá-lo em outra sessão. Isso evita que usuários de uma implantação pública vejam ou alterem dados uns dos outros.
+## Fluxo de uso
 
-## Opção 2 — executar no navegador com Docker e dados persistentes
+1. Crie o projeto.
+2. Planeje a sondagem e informe o CRS e as coordenadas.
+3. Inicie a sondagem no Diario de Sondagem.
+4. Registre cada intervalo de forma sequencial. A profundidade inicial e preenchida automaticamente.
+5. Registre amostras, VOC e NA conforme a profundidade executada.
+6. Na aba Encerramento e Perfil, informe a profundidade final e publique o perfil.
+7. Gere mapa, perfil individual, CSV, PNG e secao transversal.
 
-```bash
-docker compose up --build
-```
+## CSV
 
-Depois, abra:
+O arquivo pode usar coordenadas genericas:
 
 ```text
-http://localhost:8501
+crs_epsg,coordenada_x,coordenada_y
 ```
 
-O volume Docker `dados_hidro` preserva o banco entre reinicializações do contêiner.
+ou coordenadas geograficas SIRGAS 2000:
 
-## Opção 3 — executar localmente sem Docker
+```text
+latitude,longitude
+```
+
+O `exemplo.csv` usa EPSG:31983.
+
+## Executar localmente
 
 ```bash
 python -m venv .venv
@@ -52,12 +64,16 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-O navegador abrirá em `http://localhost:8501`. Nesse modo, o banco fica em `data/hidrogeologia.db`.
+Abra `http://localhost:8501`.
 
-## Arquivos principais
+## Docker
 
-- `streamlit_app.py`: entrada para hospedagem pública, com banco privado por sessão.
-- `app.py`: aplicação completa e entrada para execução local ou Docker.
-- `db_manager.py`: SQLite, validações, importação, backup e restauração.
-- `visualization.py`: mapa, perfil litológico e seção hidroestratigráfica.
-- `exemplo.csv`: dados fictícios para teste.
+```bash
+docker compose up --build
+```
+
+Abra `http://localhost:8501`. O volume `dados_hidro` preserva o banco.
+
+## Streamlit Community Cloud
+
+Publique o repositorio e use `streamlit_app.py` como arquivo principal. Nesse modo, cada sessao recebe um banco isolado; use o backup SQLite do painel lateral.
