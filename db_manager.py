@@ -4,7 +4,7 @@ import math
 import os
 import sqlite3
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -85,6 +85,49 @@ COLUNAS_CSV_COORDENADAS_GEOGRAFICAS = [
 
 # Mantido para compatibilidade com trechos externos que exibem as colunas basicas.
 COLUNAS_CSV_OBRIGATORIAS = COLUNAS_CSV_BASE
+
+COMPONENTES_CONSTRUTIVOS_VALIDOS = [
+    "Tubo cego",
+    "Seção filtrante",
+    "Pré-filtro",
+    "Selo de bentonita",
+    "Cimentação",
+    "Fundo / sedimentador",
+]
+
+CATEGORIAS_FOTOS_VALIDAS = [
+    "Locação",
+    "Perfuração",
+    "Amostras",
+    "Litologia",
+    "Instalação do poço",
+    "Seção filtrante",
+    "Pré-filtro",
+    "Selo e cimentação",
+    "Câmara de calçada",
+    "Desenvolvimento",
+    "Acabamento final",
+    "Outro",
+]
+
+TIPOS_LEITURA_NA_VALIDOS = [
+    "Durante a perfuração",
+    "Estático / estabilizado",
+    "Após a perfuração",
+    "Após a instalação",
+    "Antes do desenvolvimento",
+    "Após o desenvolvimento",
+    "Monitoramento",
+]
+
+METODOS_DESENVOLVIMENTO_VALIDOS = [
+    "Bombeamento",
+    "Air lift",
+    "Pistoneamento",
+    "Bailer",
+    "Bombeamento e pistoneamento",
+    "Outro",
+]
 
 
 class ErroValidacao(ValueError):
@@ -278,6 +321,42 @@ def _migrar_estrutura(conexao: sqlite3.Connection) -> None:
     _adicionar_coluna_se_ausente(
         conexao, "sondagens", "data_conclusao", "TEXT"
     )
+    _adicionar_coluna_se_ausente(
+        conexao, "projetos", "cliente", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "projetos", "localizacao", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "projetos", "responsavel_tecnico", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "projetos", "registro_profissional", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "origem_coordenada", "TEXT DEFAULT 'Manual'"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "precisao_gps_m", "REAL"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "data_captura_gps", "TEXT"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "metodo_perfuracao", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "equipamento", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "empresa_executora", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "responsavel_campo", "TEXT DEFAULT ''"
+    )
+    _adicionar_coluna_se_ausente(
+        conexao, "sondagens", "observacoes_gerais", "TEXT DEFAULT ''"
+    )
 
     conexao.execute(
         """
@@ -287,7 +366,13 @@ def _migrar_estrutura(conexao: sqlite3.Connection) -> None:
             coordenada_y = COALESCE(coordenada_y, latitude),
             profundidade_planejada = COALESCE(profundidade_planejada, profundidade_total),
             profundidade_atual = COALESCE(profundidade_atual, 0),
-            status = COALESCE(NULLIF(status, ''), 'Planejada')
+            status = COALESCE(NULLIF(status, ''), 'Planejada'),
+            origem_coordenada = COALESCE(NULLIF(origem_coordenada, ''), 'Manual'),
+            metodo_perfuracao = COALESCE(metodo_perfuracao, ''),
+            equipamento = COALESCE(equipamento, ''),
+            empresa_executora = COALESCE(empresa_executora, ''),
+            responsavel_campo = COALESCE(responsavel_campo, ''),
+            observacoes_gerais = COALESCE(observacoes_gerais, '')
         """
     )
 
@@ -347,7 +432,11 @@ def inicializar_banco(caminho_banco: str | Path = CAMINHO_BANCO_PADRAO) -> None:
             CREATE TABLE IF NOT EXISTS projetos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome TEXT NOT NULL UNIQUE,
-                descricao TEXT NOT NULL DEFAULT ''
+                descricao TEXT NOT NULL DEFAULT '',
+                cliente TEXT NOT NULL DEFAULT '',
+                localizacao TEXT NOT NULL DEFAULT '',
+                responsavel_tecnico TEXT NOT NULL DEFAULT '',
+                registro_profissional TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS sondagens (
@@ -370,6 +459,14 @@ def inicializar_banco(caminho_banco: str | Path = CAMINHO_BANCO_PADRAO) -> None:
                 data TEXT NOT NULL,
                 data_inicio TEXT,
                 data_conclusao TEXT,
+                origem_coordenada TEXT NOT NULL DEFAULT 'Manual',
+                precisao_gps_m REAL,
+                data_captura_gps TEXT,
+                metodo_perfuracao TEXT NOT NULL DEFAULT '',
+                equipamento TEXT NOT NULL DEFAULT '',
+                empresa_executora TEXT NOT NULL DEFAULT '',
+                responsavel_campo TEXT NOT NULL DEFAULT '',
+                observacoes_gerais TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (projeto_id) REFERENCES projetos(id) ON DELETE CASCADE,
                 UNIQUE (projeto_id, nome_furo)
             );
@@ -420,6 +517,109 @@ def inicializar_banco(caminho_banco: str | Path = CAMINHO_BANCO_PADRAO) -> None:
                 FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS leituras_nivel_agua (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sondagem_id INTEGER NOT NULL,
+                data_hora TEXT NOT NULL,
+                profundidade_m REAL NOT NULL CHECK (profundidade_m >= 0),
+                tipo TEXT NOT NULL,
+                usar_como_estatico INTEGER NOT NULL DEFAULT 0,
+                observacoes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS fotos_sondagem (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sondagem_id INTEGER NOT NULL,
+                categoria TEXT NOT NULL,
+                profundidade_m REAL,
+                legenda TEXT NOT NULL DEFAULT '',
+                nome_arquivo TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                conteudo BLOB NOT NULL,
+                largura_px INTEGER,
+                altura_px INTEGER,
+                tamanho_bytes INTEGER NOT NULL,
+                criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS pocos_monitoramento (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sondagem_id INTEGER NOT NULL UNIQUE,
+                data_instalacao TEXT,
+                profundidade_poco REAL NOT NULL CHECK (profundidade_poco > 0),
+                diametro_perfuracao_mm REAL,
+                diametro_revestimento_mm REAL,
+                material_revestimento TEXT NOT NULL DEFAULT '',
+                fabricante_modelo TEXT NOT NULL DEFAULT '',
+                cota_boca_tubo REAL,
+                altura_boca_tubo_m REAL,
+                tipo_protecao_superficial TEXT NOT NULL DEFAULT '',
+                camara_calcada INTEGER NOT NULL DEFAULT 0,
+                tampa TEXT NOT NULL DEFAULT '',
+                responsavel_instalacao TEXT NOT NULL DEFAULT '',
+                observacoes TEXT NOT NULL DEFAULT '',
+                atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS intervalos_construtivos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sondagem_id INTEGER NOT NULL,
+                componente TEXT NOT NULL,
+                profundidade_inicial REAL NOT NULL CHECK (profundidade_inicial >= 0),
+                profundidade_final REAL NOT NULL CHECK (
+                    profundidade_final > profundidade_inicial
+                ),
+                material TEXT NOT NULL DEFAULT '',
+                especificacao TEXT NOT NULL DEFAULT '',
+                diametro_mm REAL,
+                abertura_ranhura_mm REAL,
+                granulometria TEXT NOT NULL DEFAULT '',
+                criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS desenvolvimentos_poco (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sondagem_id INTEGER NOT NULL UNIQUE,
+                realizado INTEGER NOT NULL DEFAULT 0,
+                data TEXT,
+                metodo TEXT NOT NULL DEFAULT '',
+                duracao_min REAL,
+                profundidade_equipamento_m REAL,
+                na_antes_m REAL,
+                na_depois_m REAL,
+                vazao_l_min REAL,
+                volume_retirado_l REAL,
+                turbidez_inicial_ntu REAL,
+                turbidez_final_ntu REAL,
+                ph_final REAL,
+                condutividade_final_us_cm REAL,
+                temperatura_final_c REAL,
+                responsavel TEXT NOT NULL DEFAULT '',
+                motivo_nao_realizado TEXT NOT NULL DEFAULT '',
+                observacoes TEXT NOT NULL DEFAULT '',
+                atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sondagem_id) REFERENCES sondagens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS leituras_desenvolvimento (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                desenvolvimento_id INTEGER NOT NULL,
+                tempo_min REAL NOT NULL CHECK (tempo_min >= 0),
+                nivel_agua_m REAL,
+                vazao_l_min REAL,
+                turbidez_ntu REAL,
+                ph REAL,
+                condutividade_us_cm REAL,
+                temperatura_c REAL,
+                observacoes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (desenvolvimento_id)
+                    REFERENCES desenvolvimentos_poco(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sondagens_projeto
                 ON sondagens(projeto_id);
             CREATE INDEX IF NOT EXISTS idx_camadas_sondagem
@@ -430,6 +630,14 @@ def inicializar_banco(caminho_banco: str | Path = CAMINHO_BANCO_PADRAO) -> None:
                 ON coletas_amostras(sondagem_id, profundidade_coleta);
             CREATE INDEX IF NOT EXISTS idx_voc_sondagem
                 ON voc_medicoes(sondagem_id, profundidade);
+            CREATE INDEX IF NOT EXISTS idx_leituras_na_sondagem
+                ON leituras_nivel_agua(sondagem_id, data_hora);
+            CREATE INDEX IF NOT EXISTS idx_fotos_sondagem
+                ON fotos_sondagem(sondagem_id, criado_em);
+            CREATE INDEX IF NOT EXISTS idx_intervalos_construtivos_sondagem
+                ON intervalos_construtivos(sondagem_id, profundidade_inicial);
+            CREATE INDEX IF NOT EXISTS idx_leituras_desenvolvimento
+                ON leituras_desenvolvimento(desenvolvimento_id, tempo_min);
             """
         )
         _migrar_estrutura(conexao)
@@ -448,6 +656,11 @@ def criar_projeto(
     nome: str,
     descricao: str = "",
     caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+    *,
+    cliente: str = "",
+    localizacao: str = "",
+    responsavel_tecnico: str = "",
+    registro_profissional: str = "",
 ) -> int:
     """Insere um projeto e devolve o identificador criado."""
     nome_limpo = str(nome).strip()
@@ -457,23 +670,74 @@ def criar_projeto(
     try:
         with conectar(caminho_banco) as conexao:
             cursor = conexao.execute(
-                "INSERT INTO projetos (nome, descricao) VALUES (?, ?)",
-                (nome_limpo, str(descricao or "").strip()),
+                """
+                INSERT INTO projetos (
+                    nome, descricao, cliente, localizacao,
+                    responsavel_tecnico, registro_profissional
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    nome_limpo,
+                    str(descricao or "").strip(),
+                    str(cliente or "").strip(),
+                    str(localizacao or "").strip(),
+                    str(responsavel_tecnico or "").strip(),
+                    str(registro_profissional or "").strip(),
+                ),
             )
             return int(cursor.lastrowid)
     except sqlite3.IntegrityError as erro:
         raise ErroValidacao(f"Nao foi possivel criar o projeto: {erro}") from erro
 
 
+def atualizar_projeto(
+    projeto_id: int,
+    descricao: str = "",
+    cliente: str = "",
+    localizacao: str = "",
+    responsavel_tecnico: str = "",
+    registro_profissional: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Atualiza os metadados usados nos relatorios do projeto."""
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            UPDATE projetos
+            SET descricao = ?, cliente = ?, localizacao = ?,
+                responsavel_tecnico = ?, registro_profissional = ?
+            WHERE id = ?
+            """,
+            (
+                str(descricao or "").strip(),
+                str(cliente or "").strip(),
+                str(localizacao or "").strip(),
+                str(responsavel_tecnico or "").strip(),
+                str(registro_profissional or "").strip(),
+                int(projeto_id),
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ErroValidacao("Projeto nao encontrado.")
+
+
 def listar_projetos(
     caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
 ) -> pd.DataFrame:
     """Lista os projetos cadastrados."""
+    colunas = [
+        "id", "nome", "descricao", "cliente", "localizacao",
+        "responsavel_tecnico", "registro_profissional",
+    ]
     with conectar(caminho_banco) as conexao:
         linhas = conexao.execute(
-            "SELECT id, nome, descricao FROM projetos ORDER BY nome"
+            """
+            SELECT id, nome, descricao, cliente, localizacao,
+                   responsavel_tecnico, registro_profissional
+            FROM projetos ORDER BY nome
+            """
         ).fetchall()
-    return _dataframe_de_linhas(linhas, ["id", "nome", "descricao"])
+    return _dataframe_de_linhas(linhas, colunas)
 
 
 def obter_projeto(
@@ -483,7 +747,11 @@ def obter_projeto(
     """Obtem um projeto pelo identificador."""
     with conectar(caminho_banco) as conexao:
         linha = conexao.execute(
-            "SELECT id, nome, descricao FROM projetos WHERE id = ?",
+            """
+            SELECT id, nome, descricao, cliente, localizacao,
+                   responsavel_tecnico, registro_profissional
+            FROM projetos WHERE id = ?
+            """,
             (int(projeto_id),),
         ).fetchone()
     return dict(linha) if linha else None
@@ -568,6 +836,14 @@ def criar_sondagem(
     latitude: float | None = None,
     longitude: float | None = None,
     profundidade_total: float | None = None,
+    origem_coordenada: str = "Manual",
+    precisao_gps_m: float | None = None,
+    data_captura_gps: str | None = None,
+    metodo_perfuracao: str = "",
+    equipamento: str = "",
+    empresa_executora: str = "",
+    responsavel_campo: str = "",
+    observacoes_gerais: str = "",
 ) -> int:
     """Cria uma sondagem planejada com CRS de entrada configuravel."""
     if profundidade_planejada is None:
@@ -605,8 +881,11 @@ def criar_sondagem(
                     projeto_id, nome_furo, latitude, longitude,
                     crs_entrada, coordenada_x, coordenada_y, altitude,
                     profundidade_total, profundidade_planejada,
-                    profundidade_atual, nivel_agua_estatico, status, data
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    profundidade_atual, nivel_agua_estatico, status, data,
+                    origem_coordenada, precisao_gps_m, data_captura_gps,
+                    metodo_perfuracao, equipamento, empresa_executora,
+                    responsavel_campo, observacoes_gerais
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(projeto_id),
@@ -622,6 +901,18 @@ def criar_sondagem(
                     dados["nivel_agua_estatico"],
                     STATUS_PLANEJADA,
                     data_texto,
+                    str(origem_coordenada or "Manual").strip() or "Manual",
+                    (
+                        None
+                        if precisao_gps_m is None
+                        else _validar_numero_finito(precisao_gps_m, "precisao GPS")
+                    ),
+                    str(data_captura_gps).strip() if data_captura_gps else None,
+                    str(metodo_perfuracao or "").strip(),
+                    str(equipamento or "").strip(),
+                    str(empresa_executora or "").strip(),
+                    str(responsavel_campo or "").strip(),
+                    str(observacoes_gerais or "").strip(),
                 ),
             )
             return int(cursor.lastrowid)
@@ -635,6 +926,10 @@ def atualizar_coordenadas_sondagem(
     coordenada_y: float,
     crs_entrada: int,
     caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+    *,
+    origem_coordenada: str = "Manual",
+    precisao_gps_m: float | None = None,
+    data_captura_gps: str | None = None,
 ) -> None:
     """Atualiza o CRS original e as coordenadas canonicas de uma sondagem."""
     x = _validar_numero_finito(coordenada_x, "coordenada X")
@@ -646,10 +941,21 @@ def atualizar_coordenadas_sondagem(
             """
             UPDATE sondagens
             SET crs_entrada = ?, coordenada_x = ?, coordenada_y = ?,
-                latitude = ?, longitude = ?
+                latitude = ?, longitude = ?, origem_coordenada = ?,
+                precisao_gps_m = ?, data_captura_gps = ?
             WHERE id = ?
             """,
-            (epsg, x, y, latitude, longitude, int(sondagem_id)),
+            (
+                epsg,
+                x,
+                y,
+                latitude,
+                longitude,
+                str(origem_coordenada or "Manual").strip() or "Manual",
+                None if precisao_gps_m is None else float(precisao_gps_m),
+                str(data_captura_gps).strip() if data_captura_gps else None,
+                int(sondagem_id),
+            ),
         )
         if cursor.rowcount == 0:
             raise ErroValidacao("Sondagem nao encontrada.")
@@ -677,6 +983,14 @@ def _consulta_sondagens() -> str:
             s.data,
             s.data_inicio,
             s.data_conclusao,
+            s.origem_coordenada,
+            s.precisao_gps_m,
+            s.data_captura_gps,
+            s.metodo_perfuracao,
+            s.equipamento,
+            s.empresa_executora,
+            s.responsavel_campo,
+            s.observacoes_gerais,
             CASE
                 WHEN s.nivel_agua_estatico IS NULL THEN NULL
                 ELSE s.altitude - s.nivel_agua_estatico
@@ -738,6 +1052,14 @@ def listar_sondagens(
         "data",
         "data_inicio",
         "data_conclusao",
+        "origem_coordenada",
+        "precisao_gps_m",
+        "data_captura_gps",
+        "metodo_perfuracao",
+        "equipamento",
+        "empresa_executora",
+        "responsavel_campo",
+        "observacoes_gerais",
         "cota_nivel_agua",
         "espessura_zona_vadosa",
         "espessura_trecho_saturado",
@@ -1934,6 +2256,765 @@ def importar_dataframe(
     )
 
 
+def atualizar_dados_execucao(
+    sondagem_id: int,
+    metodo_perfuracao: str = "",
+    equipamento: str = "",
+    empresa_executora: str = "",
+    responsavel_campo: str = "",
+    observacoes_gerais: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Atualiza informacoes operacionais usadas no diario e no relatorio."""
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            UPDATE sondagens
+            SET metodo_perfuracao = ?, equipamento = ?, empresa_executora = ?,
+                responsavel_campo = ?, observacoes_gerais = ?
+            WHERE id = ?
+            """,
+            (
+                str(metodo_perfuracao or "").strip(),
+                str(equipamento or "").strip(),
+                str(empresa_executora or "").strip(),
+                str(responsavel_campo or "").strip(),
+                str(observacoes_gerais or "").strip(),
+                int(sondagem_id),
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ErroValidacao("Sondagem nao encontrada.")
+
+
+def adicionar_leitura_nivel_agua(
+    sondagem_id: int,
+    profundidade_m: float,
+    tipo: str,
+    data_hora: str | datetime | None = None,
+    observacoes: str = "",
+    usar_como_estatico: bool = False,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> int:
+    """Registra uma leitura historica de nivel d'agua."""
+    sondagem = obter_sondagem(sondagem_id, caminho_banco)
+    if not sondagem:
+        raise ErroValidacao("Sondagem nao encontrada.")
+    profundidade = _validar_numero_finito(profundidade_m, "nivel d'agua")
+    if profundidade < 0:
+        raise ErroValidacao("O nivel d'agua nao pode ser negativo.")
+    limite = max(
+        float(sondagem.get("profundidade_atual") or 0),
+        float(sondagem.get("profundidade_total") or 0),
+    )
+    if limite > 0 and profundidade > limite + TOLERANCIA_PROFUNDIDADE:
+        raise ErroValidacao(
+            f"A leitura nao pode ultrapassar a profundidade da sondagem ({limite:.3f} m)."
+        )
+    tipo_limpo = str(tipo or "").strip()
+    if tipo_limpo not in TIPOS_LEITURA_NA_VALIDOS:
+        raise ErroValidacao("Selecione um tipo de leitura de nivel d'agua valido.")
+    data_texto = (
+        data_hora.isoformat(timespec="minutes")
+        if isinstance(data_hora, datetime)
+        else str(data_hora or datetime.now().isoformat(timespec="minutes"))
+    )
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            INSERT INTO leituras_nivel_agua (
+                sondagem_id, data_hora, profundidade_m, tipo,
+                usar_como_estatico, observacoes
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(sondagem_id),
+                data_texto,
+                profundidade,
+                tipo_limpo,
+                int(bool(usar_como_estatico)),
+                str(observacoes or "").strip(),
+            ),
+        )
+        if usar_como_estatico:
+            conexao.execute(
+                "UPDATE leituras_nivel_agua SET usar_como_estatico = 0 WHERE sondagem_id = ? AND id <> ?",
+                (int(sondagem_id), int(cursor.lastrowid)),
+            )
+            conexao.execute(
+                "UPDATE sondagens SET nivel_agua_estatico = ? WHERE id = ?",
+                (profundidade, int(sondagem_id)),
+            )
+        return int(cursor.lastrowid)
+
+
+def listar_leituras_nivel_agua(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> pd.DataFrame:
+    """Lista o historico de leituras de nivel d'agua."""
+    colunas = [
+        "id", "sondagem_id", "data_hora", "profundidade_m", "tipo",
+        "usar_como_estatico", "observacoes",
+    ]
+    with conectar(caminho_banco) as conexao:
+        linhas = conexao.execute(
+            """
+            SELECT id, sondagem_id, data_hora, profundidade_m, tipo,
+                   usar_como_estatico, observacoes
+            FROM leituras_nivel_agua
+            WHERE sondagem_id = ?
+            ORDER BY datetime(data_hora), id
+            """,
+            (int(sondagem_id),),
+        ).fetchall()
+    dados = _dataframe_de_linhas(linhas, colunas)
+    if not dados.empty:
+        dados["usar_como_estatico"] = dados["usar_como_estatico"].astype(bool)
+    return dados
+
+
+def remover_leitura_nivel_agua(
+    leitura_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Remove uma leitura historica de nivel d'agua."""
+    with conectar(caminho_banco) as conexao:
+        linha = conexao.execute(
+            "SELECT sondagem_id, usar_como_estatico FROM leituras_nivel_agua WHERE id = ?",
+            (int(leitura_id),),
+        ).fetchone()
+        if not linha:
+            return
+        conexao.execute(
+            "DELETE FROM leituras_nivel_agua WHERE id = ?",
+            (int(leitura_id),),
+        )
+        if bool(linha["usar_como_estatico"]):
+            conexao.execute(
+                "UPDATE sondagens SET nivel_agua_estatico = NULL WHERE id = ?",
+                (int(linha["sondagem_id"]),),
+            )
+
+
+def adicionar_foto_sondagem(
+    sondagem_id: int,
+    categoria: str,
+    nome_arquivo: str,
+    mime_type: str,
+    conteudo: bytes,
+    legenda: str = "",
+    profundidade_m: float | None = None,
+    largura_px: int | None = None,
+    altura_px: int | None = None,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> int:
+    """Armazena uma fotografia compactada dentro do backup SQLite."""
+    if not obter_sondagem(sondagem_id, caminho_banco):
+        raise ErroValidacao("Sondagem nao encontrada.")
+    categoria_limpa = str(categoria or "").strip()
+    if categoria_limpa not in CATEGORIAS_FOTOS_VALIDAS:
+        raise ErroValidacao("Selecione uma categoria de fotografia valida.")
+    bytes_foto = bytes(conteudo or b"")
+    if not bytes_foto:
+        raise ErroValidacao("A fotografia esta vazia.")
+    if len(bytes_foto) > 8 * 1024 * 1024:
+        raise ErroValidacao("A fotografia compactada excede 8 MB.")
+    profundidade = None
+    if profundidade_m is not None and not pd.isna(profundidade_m):
+        profundidade = _validar_numero_finito(profundidade_m, "profundidade da foto")
+        if profundidade < 0:
+            raise ErroValidacao("A profundidade da foto nao pode ser negativa.")
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            INSERT INTO fotos_sondagem (
+                sondagem_id, categoria, profundidade_m, legenda,
+                nome_arquivo, mime_type, conteudo, largura_px,
+                altura_px, tamanho_bytes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(sondagem_id),
+                categoria_limpa,
+                profundidade,
+                str(legenda or "").strip(),
+                str(nome_arquivo or "foto.jpg").strip(),
+                str(mime_type or "image/jpeg").strip(),
+                sqlite3.Binary(bytes_foto),
+                None if largura_px is None else int(largura_px),
+                None if altura_px is None else int(altura_px),
+                len(bytes_foto),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def listar_fotos_sondagem(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+    incluir_conteudo: bool = False,
+) -> list[dict[str, Any]]:
+    """Lista fotos com ou sem o BLOB para reduzir uso de memoria na galeria."""
+    campo_conteudo = ", conteudo" if incluir_conteudo else ""
+    with conectar(caminho_banco) as conexao:
+        linhas = conexao.execute(
+            f"""
+            SELECT id, sondagem_id, categoria, profundidade_m, legenda,
+                   nome_arquivo, mime_type, largura_px, altura_px,
+                   tamanho_bytes, criado_em{campo_conteudo}
+            FROM fotos_sondagem
+            WHERE sondagem_id = ?
+            ORDER BY criado_em, id
+            """,
+            (int(sondagem_id),),
+        ).fetchall()
+    return [dict(linha) for linha in linhas]
+
+
+def obter_foto_sondagem(
+    foto_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> dict[str, Any] | None:
+    """Obtem uma fotografia completa pelo identificador."""
+    with conectar(caminho_banco) as conexao:
+        linha = conexao.execute(
+            "SELECT * FROM fotos_sondagem WHERE id = ?",
+            (int(foto_id),),
+        ).fetchone()
+    return dict(linha) if linha else None
+
+
+def remover_foto_sondagem(
+    foto_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Remove uma fotografia do banco."""
+    with conectar(caminho_banco) as conexao:
+        conexao.execute("DELETE FROM fotos_sondagem WHERE id = ?", (int(foto_id),))
+
+
+def salvar_poco_monitoramento(
+    sondagem_id: int,
+    profundidade_poco: float,
+    data_instalacao: str | date | None = None,
+    diametro_perfuracao_mm: float | None = None,
+    diametro_revestimento_mm: float | None = None,
+    material_revestimento: str = "PVC geomecanico",
+    fabricante_modelo: str = "",
+    cota_boca_tubo: float | None = None,
+    altura_boca_tubo_m: float | None = None,
+    tipo_protecao_superficial: str = "Camara de calcada",
+    camara_calcada: bool = True,
+    tampa: str = "",
+    responsavel_instalacao: str = "",
+    observacoes: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Cria ou atualiza os dados gerais do poco de monitoramento."""
+    sondagem = obter_sondagem(sondagem_id, caminho_banco)
+    if not sondagem:
+        raise ErroValidacao("Sondagem nao encontrada.")
+    profundidade = _validar_numero_finito(profundidade_poco, "profundidade do poco")
+    if profundidade <= 0:
+        raise ErroValidacao("A profundidade do poco deve ser maior que zero.")
+    limite = max(
+        float(sondagem.get("profundidade_total") or 0),
+        float(sondagem.get("profundidade_atual") or 0),
+    )
+    if limite > 0 and profundidade > limite + TOLERANCIA_PROFUNDIDADE:
+        raise ErroValidacao(
+            f"A profundidade do poco nao pode ultrapassar a perfuracao ({limite:.3f} m)."
+        )
+
+    def opcional_positivo(valor: Any, nome: str) -> float | None:
+        if valor is None or pd.isna(valor):
+            return None
+        numero = _validar_numero_finito(valor, nome)
+        if numero < 0:
+            raise ErroValidacao(f"O campo '{nome}' nao pode ser negativo.")
+        return numero
+
+    dados = (
+        int(sondagem_id),
+        str(data_instalacao).strip() if data_instalacao else None,
+        profundidade,
+        opcional_positivo(diametro_perfuracao_mm, "diametro da perfuracao"),
+        opcional_positivo(diametro_revestimento_mm, "diametro do revestimento"),
+        str(material_revestimento or "").strip(),
+        str(fabricante_modelo or "").strip(),
+        None if cota_boca_tubo is None else _validar_numero_finito(cota_boca_tubo, "cota da boca do tubo"),
+        None if altura_boca_tubo_m is None else _validar_numero_finito(altura_boca_tubo_m, "altura da boca do tubo"),
+        str(tipo_protecao_superficial or "").strip(),
+        int(bool(camara_calcada)),
+        str(tampa or "").strip(),
+        str(responsavel_instalacao or "").strip(),
+        str(observacoes or "").strip(),
+    )
+    with conectar(caminho_banco) as conexao:
+        conexao.execute(
+            """
+            INSERT INTO pocos_monitoramento (
+                sondagem_id, data_instalacao, profundidade_poco,
+                diametro_perfuracao_mm, diametro_revestimento_mm,
+                material_revestimento, fabricante_modelo, cota_boca_tubo,
+                altura_boca_tubo_m, tipo_protecao_superficial,
+                camara_calcada, tampa, responsavel_instalacao, observacoes,
+                atualizado_em
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(sondagem_id) DO UPDATE SET
+                data_instalacao = excluded.data_instalacao,
+                profundidade_poco = excluded.profundidade_poco,
+                diametro_perfuracao_mm = excluded.diametro_perfuracao_mm,
+                diametro_revestimento_mm = excluded.diametro_revestimento_mm,
+                material_revestimento = excluded.material_revestimento,
+                fabricante_modelo = excluded.fabricante_modelo,
+                cota_boca_tubo = excluded.cota_boca_tubo,
+                altura_boca_tubo_m = excluded.altura_boca_tubo_m,
+                tipo_protecao_superficial = excluded.tipo_protecao_superficial,
+                camara_calcada = excluded.camara_calcada,
+                tampa = excluded.tampa,
+                responsavel_instalacao = excluded.responsavel_instalacao,
+                observacoes = excluded.observacoes,
+                atualizado_em = CURRENT_TIMESTAMP
+            """,
+            dados,
+        )
+
+
+def obter_poco_monitoramento(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> dict[str, Any] | None:
+    """Obtem os dados gerais do poco de monitoramento."""
+    with conectar(caminho_banco) as conexao:
+        linha = conexao.execute(
+            "SELECT * FROM pocos_monitoramento WHERE sondagem_id = ?",
+            (int(sondagem_id),),
+        ).fetchone()
+    if not linha:
+        return None
+    dados = dict(linha)
+    dados["camara_calcada"] = bool(dados.get("camara_calcada"))
+    return dados
+
+
+def adicionar_intervalo_construtivo(
+    sondagem_id: int,
+    componente: str,
+    profundidade_inicial: float,
+    profundidade_final: float,
+    material: str = "",
+    especificacao: str = "",
+    diametro_mm: float | None = None,
+    abertura_ranhura_mm: float | None = None,
+    granulometria: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> int:
+    """Adiciona um intervalo do revestimento ou do espaco anular."""
+    componente_limpo = str(componente or "").strip()
+    if componente_limpo not in COMPONENTES_CONSTRUTIVOS_VALIDOS:
+        raise ErroValidacao("Selecione um componente construtivo valido.")
+    inicio = _validar_numero_finito(profundidade_inicial, "profundidade inicial")
+    final = _validar_numero_finito(profundidade_final, "profundidade final")
+    if inicio < 0 or final <= inicio:
+        raise ErroValidacao("O intervalo construtivo deve ter inicio >= 0 e final > inicio.")
+    poco = obter_poco_monitoramento(sondagem_id, caminho_banco)
+    sondagem = obter_sondagem(sondagem_id, caminho_banco)
+    if not sondagem:
+        raise ErroValidacao("Sondagem nao encontrada.")
+    limite = float(poco["profundidade_poco"]) if poco else float(sondagem["profundidade_total"])
+    if final > limite + TOLERANCIA_PROFUNDIDADE:
+        raise ErroValidacao(
+            f"O intervalo nao pode ultrapassar a profundidade do poco ({limite:.3f} m)."
+        )
+
+    def opcional(valor: Any, nome: str) -> float | None:
+        if valor is None or pd.isna(valor):
+            return None
+        numero = _validar_numero_finito(valor, nome)
+        if numero < 0:
+            raise ErroValidacao(f"O campo '{nome}' nao pode ser negativo.")
+        return numero
+
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            INSERT INTO intervalos_construtivos (
+                sondagem_id, componente, profundidade_inicial,
+                profundidade_final, material, especificacao, diametro_mm,
+                abertura_ranhura_mm, granulometria
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(sondagem_id), componente_limpo, inicio, final,
+                str(material or "").strip(), str(especificacao or "").strip(),
+                opcional(diametro_mm, "diametro"),
+                opcional(abertura_ranhura_mm, "abertura das ranhuras"),
+                str(granulometria or "").strip(),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def listar_intervalos_construtivos(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> pd.DataFrame:
+    """Lista os componentes construtivos por profundidade."""
+    colunas = [
+        "id", "sondagem_id", "componente", "profundidade_inicial",
+        "profundidade_final", "espessura", "material", "especificacao",
+        "diametro_mm", "abertura_ranhura_mm", "granulometria",
+    ]
+    with conectar(caminho_banco) as conexao:
+        linhas = conexao.execute(
+            """
+            SELECT id, sondagem_id, componente, profundidade_inicial,
+                   profundidade_final,
+                   profundidade_final - profundidade_inicial AS espessura,
+                   material, especificacao, diametro_mm,
+                   abertura_ranhura_mm, granulometria
+            FROM intervalos_construtivos
+            WHERE sondagem_id = ?
+            ORDER BY profundidade_inicial, profundidade_final, componente
+            """,
+            (int(sondagem_id),),
+        ).fetchall()
+    return _dataframe_de_linhas(linhas, colunas)
+
+
+def remover_intervalo_construtivo(
+    intervalo_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Remove um intervalo construtivo."""
+    with conectar(caminho_banco) as conexao:
+        conexao.execute(
+            "DELETE FROM intervalos_construtivos WHERE id = ?",
+            (int(intervalo_id),),
+        )
+
+
+def validar_perfil_construtivo(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> tuple[bool, list[str], list[str], dict[str, float]]:
+    """Valida o revestimento, filtro e materiais anulares do poco."""
+    erros: list[str] = []
+    avisos: list[str] = []
+    poco = obter_poco_monitoramento(sondagem_id, caminho_banco)
+    if not poco:
+        return False, ["Cadastre primeiro os dados gerais do poco."], [], {}
+    intervalos = listar_intervalos_construtivos(sondagem_id, caminho_banco)
+    profundidade_poco = float(poco["profundidade_poco"])
+    if intervalos.empty:
+        return False, ["Cadastre ao menos um intervalo construtivo."], [], {
+            "profundidade_poco": profundidade_poco,
+            "comprimento_filtro": 0.0,
+        }
+
+    grupos_exclusivos = {
+        "coluna": ["Tubo cego", "Seção filtrante", "Fundo / sedimentador"],
+        "anular": ["Pré-filtro", "Selo de bentonita", "Cimentação"],
+    }
+    for nome_grupo, componentes in grupos_exclusivos.items():
+        grupo = intervalos[intervalos["componente"].isin(componentes)].sort_values(
+            "profundidade_inicial"
+        )
+        anterior_final: float | None = None
+        anterior_nome = ""
+        for _, linha in grupo.iterrows():
+            inicio = float(linha["profundidade_inicial"])
+            final = float(linha["profundidade_final"])
+            if anterior_final is not None and inicio < anterior_final - TOLERANCIA_PROFUNDIDADE:
+                erros.append(
+                    f"Ha sobreposicao no grupo {nome_grupo}: {anterior_nome} e {linha['componente']}."
+                )
+            anterior_final = max(anterior_final or final, final)
+            anterior_nome = str(linha["componente"])
+
+    filtros = intervalos[intervalos["componente"] == "Seção filtrante"]
+    comprimento_filtro = float(filtros["espessura"].sum()) if not filtros.empty else 0.0
+    if filtros.empty:
+        erros.append("Cadastre ao menos uma secao filtrante.")
+
+    pre_filtros = intervalos[intervalos["componente"] == "Pré-filtro"]
+    for _, filtro in filtros.iterrows():
+        inicio = float(filtro["profundidade_inicial"])
+        final = float(filtro["profundidade_final"])
+        cobre = any(
+            float(pre["profundidade_inicial"]) <= inicio + TOLERANCIA_PROFUNDIDADE
+            and float(pre["profundidade_final"]) >= final - TOLERANCIA_PROFUNDIDADE
+            for _, pre in pre_filtros.iterrows()
+        )
+        if not cobre:
+            avisos.append(
+                f"A secao filtrante {inicio:.2f}-{final:.2f} m nao esta integralmente envolvida por pre-filtro."
+            )
+
+    selos = intervalos[intervalos["componente"].isin(["Selo de bentonita", "Cimentação"])]
+    for _, filtro in filtros.iterrows():
+        for _, selo in selos.iterrows():
+            sobrepoe = (
+                float(selo["profundidade_inicial"]) < float(filtro["profundidade_final"]) - TOLERANCIA_PROFUNDIDADE
+                and float(selo["profundidade_final"]) > float(filtro["profundidade_inicial"]) + TOLERANCIA_PROFUNDIDADE
+            )
+            if sobrepoe:
+                erros.append(
+                    f"{selo['componente']} se sobrepoe a secao filtrante entre "
+                    f"{filtro['profundidade_inicial']:.2f} e {filtro['profundidade_final']:.2f} m."
+                )
+
+    maior_final = float(intervalos["profundidade_final"].max())
+    if maior_final < profundidade_poco - TOLERANCIA_PROFUNDIDADE:
+        avisos.append(
+            f"Os intervalos cadastrados terminam em {maior_final:.2f} m, antes da profundidade do poco ({profundidade_poco:.2f} m)."
+        )
+
+    metricas = {
+        "profundidade_poco": profundidade_poco,
+        "comprimento_filtro": comprimento_filtro,
+        "topo_filtro": float(filtros["profundidade_inicial"].min()) if not filtros.empty else math.nan,
+        "base_filtro": float(filtros["profundidade_final"].max()) if not filtros.empty else math.nan,
+    }
+    return not erros, erros, avisos, metricas
+
+
+def salvar_desenvolvimento(
+    sondagem_id: int,
+    realizado: bool,
+    data_desenvolvimento: str | date | None = None,
+    metodo: str = "",
+    duracao_min: float | None = None,
+    profundidade_equipamento_m: float | None = None,
+    na_antes_m: float | None = None,
+    na_depois_m: float | None = None,
+    vazao_l_min: float | None = None,
+    volume_retirado_l: float | None = None,
+    turbidez_inicial_ntu: float | None = None,
+    turbidez_final_ntu: float | None = None,
+    ph_final: float | None = None,
+    condutividade_final_us_cm: float | None = None,
+    temperatura_final_c: float | None = None,
+    responsavel: str = "",
+    motivo_nao_realizado: str = "",
+    observacoes: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> int:
+    """Cria ou atualiza o registro de desenvolvimento do poco."""
+    if not obter_sondagem(sondagem_id, caminho_banco):
+        raise ErroValidacao("Sondagem nao encontrada.")
+    metodo_limpo = str(metodo or "").strip()
+    if realizado and metodo_limpo not in METODOS_DESENVOLVIMENTO_VALIDOS:
+        raise ErroValidacao("Selecione um metodo de desenvolvimento valido.")
+    if not realizado and not str(motivo_nao_realizado or "").strip():
+        raise ErroValidacao("Informe o motivo quando o desenvolvimento nao foi realizado.")
+
+    def numero_opcional(valor: Any, nome: str, minimo: float | None = 0.0) -> float | None:
+        if valor is None or pd.isna(valor):
+            return None
+        numero = _validar_numero_finito(valor, nome)
+        if minimo is not None and numero < minimo:
+            raise ErroValidacao(f"O campo '{nome}' nao pode ser menor que {minimo}.")
+        return numero
+
+    parametros = (
+        int(sondagem_id), int(bool(realizado)),
+        str(data_desenvolvimento).strip() if data_desenvolvimento else None,
+        metodo_limpo if realizado else "",
+        numero_opcional(duracao_min, "duracao"),
+        numero_opcional(profundidade_equipamento_m, "profundidade do equipamento"),
+        numero_opcional(na_antes_m, "NA antes"),
+        numero_opcional(na_depois_m, "NA depois"),
+        numero_opcional(vazao_l_min, "vazao"),
+        numero_opcional(volume_retirado_l, "volume retirado"),
+        numero_opcional(turbidez_inicial_ntu, "turbidez inicial"),
+        numero_opcional(turbidez_final_ntu, "turbidez final"),
+        numero_opcional(ph_final, "pH", None),
+        numero_opcional(condutividade_final_us_cm, "condutividade"),
+        numero_opcional(temperatura_final_c, "temperatura", None),
+        str(responsavel or "").strip(),
+        str(motivo_nao_realizado or "").strip(),
+        str(observacoes or "").strip(),
+    )
+    with conectar(caminho_banco) as conexao:
+        conexao.execute(
+            """
+            INSERT INTO desenvolvimentos_poco (
+                sondagem_id, realizado, data, metodo, duracao_min,
+                profundidade_equipamento_m, na_antes_m, na_depois_m,
+                vazao_l_min, volume_retirado_l, turbidez_inicial_ntu,
+                turbidez_final_ntu, ph_final, condutividade_final_us_cm,
+                temperatura_final_c, responsavel, motivo_nao_realizado,
+                observacoes, atualizado_em
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(sondagem_id) DO UPDATE SET
+                realizado = excluded.realizado,
+                data = excluded.data,
+                metodo = excluded.metodo,
+                duracao_min = excluded.duracao_min,
+                profundidade_equipamento_m = excluded.profundidade_equipamento_m,
+                na_antes_m = excluded.na_antes_m,
+                na_depois_m = excluded.na_depois_m,
+                vazao_l_min = excluded.vazao_l_min,
+                volume_retirado_l = excluded.volume_retirado_l,
+                turbidez_inicial_ntu = excluded.turbidez_inicial_ntu,
+                turbidez_final_ntu = excluded.turbidez_final_ntu,
+                ph_final = excluded.ph_final,
+                condutividade_final_us_cm = excluded.condutividade_final_us_cm,
+                temperatura_final_c = excluded.temperatura_final_c,
+                responsavel = excluded.responsavel,
+                motivo_nao_realizado = excluded.motivo_nao_realizado,
+                observacoes = excluded.observacoes,
+                atualizado_em = CURRENT_TIMESTAMP
+            """,
+            parametros,
+        )
+        linha = conexao.execute(
+            "SELECT id FROM desenvolvimentos_poco WHERE sondagem_id = ?",
+            (int(sondagem_id),),
+        ).fetchone()
+        return int(linha["id"])
+
+
+def obter_desenvolvimento(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> dict[str, Any] | None:
+    """Obtem o desenvolvimento cadastrado para uma sondagem."""
+    with conectar(caminho_banco) as conexao:
+        linha = conexao.execute(
+            "SELECT * FROM desenvolvimentos_poco WHERE sondagem_id = ?",
+            (int(sondagem_id),),
+        ).fetchone()
+    if not linha:
+        return None
+    dados = dict(linha)
+    dados["realizado"] = bool(dados.get("realizado"))
+    return dados
+
+
+def adicionar_leitura_desenvolvimento(
+    sondagem_id: int,
+    tempo_min: float,
+    nivel_agua_m: float | None = None,
+    vazao_l_min: float | None = None,
+    turbidez_ntu: float | None = None,
+    ph: float | None = None,
+    condutividade_us_cm: float | None = None,
+    temperatura_c: float | None = None,
+    observacoes: str = "",
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> int:
+    """Adiciona uma leitura cronologica do desenvolvimento."""
+    desenvolvimento = obter_desenvolvimento(sondagem_id, caminho_banco)
+    if not desenvolvimento:
+        raise ErroValidacao("Salve primeiro os dados gerais do desenvolvimento.")
+    if not desenvolvimento["realizado"]:
+        raise ErroValidacao("Nao e possivel adicionar leituras a um desenvolvimento nao realizado.")
+    tempo = _validar_numero_finito(tempo_min, "tempo")
+    if tempo < 0:
+        raise ErroValidacao("O tempo nao pode ser negativo.")
+
+    def numero(valor: Any, nome: str, minimo: float | None = 0.0) -> float | None:
+        if valor is None or pd.isna(valor):
+            return None
+        resultado = _validar_numero_finito(valor, nome)
+        if minimo is not None and resultado < minimo:
+            raise ErroValidacao(f"O campo '{nome}' nao pode ser menor que {minimo}.")
+        return resultado
+
+    with conectar(caminho_banco) as conexao:
+        cursor = conexao.execute(
+            """
+            INSERT INTO leituras_desenvolvimento (
+                desenvolvimento_id, tempo_min, nivel_agua_m, vazao_l_min,
+                turbidez_ntu, ph, condutividade_us_cm, temperatura_c,
+                observacoes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(desenvolvimento["id"]), tempo,
+                numero(nivel_agua_m, "nivel d'agua"),
+                numero(vazao_l_min, "vazao"),
+                numero(turbidez_ntu, "turbidez"),
+                numero(ph, "pH", None),
+                numero(condutividade_us_cm, "condutividade"),
+                numero(temperatura_c, "temperatura", None),
+                str(observacoes or "").strip(),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def listar_leituras_desenvolvimento(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> pd.DataFrame:
+    """Lista as leituras do desenvolvimento em ordem de tempo."""
+    colunas = [
+        "id", "desenvolvimento_id", "tempo_min", "nivel_agua_m",
+        "vazao_l_min", "turbidez_ntu", "ph", "condutividade_us_cm",
+        "temperatura_c", "observacoes",
+    ]
+    with conectar(caminho_banco) as conexao:
+        linhas = conexao.execute(
+            """
+            SELECT l.id, l.desenvolvimento_id, l.tempo_min, l.nivel_agua_m,
+                   l.vazao_l_min, l.turbidez_ntu, l.ph,
+                   l.condutividade_us_cm, l.temperatura_c, l.observacoes
+            FROM leituras_desenvolvimento l
+            INNER JOIN desenvolvimentos_poco d ON d.id = l.desenvolvimento_id
+            WHERE d.sondagem_id = ?
+            ORDER BY l.tempo_min, l.id
+            """,
+            (int(sondagem_id),),
+        ).fetchall()
+    return _dataframe_de_linhas(linhas, colunas)
+
+
+def remover_leitura_desenvolvimento(
+    leitura_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> None:
+    """Remove uma leitura do desenvolvimento."""
+    with conectar(caminho_banco) as conexao:
+        conexao.execute(
+            "DELETE FROM leituras_desenvolvimento WHERE id = ?",
+            (int(leitura_id),),
+        )
+
+
+def obter_dados_completos_sondagem(
+    sondagem_id: int,
+    caminho_banco: str | Path = CAMINHO_BANCO_PADRAO,
+) -> dict[str, Any]:
+    """Agrupa todos os dados usados nos relatorios Word e Excel."""
+    sondagem = obter_sondagem(sondagem_id, caminho_banco)
+    if not sondagem:
+        raise ErroValidacao("Sondagem nao encontrada.")
+    projeto = obter_projeto(int(sondagem["projeto_id"]), caminho_banco) or {}
+    camadas = (
+        listar_camadas(sondagem_id, caminho_banco)
+        if sondagem["status"] == STATUS_CONCLUIDA
+        else listar_rascunho_camadas(sondagem_id, caminho_banco)
+    )
+    return {
+        "projeto": projeto,
+        "sondagem": sondagem,
+        "camadas": camadas,
+        "coletas": listar_coletas(sondagem_id, caminho_banco),
+        "voc": listar_voc(sondagem_id, caminho_banco),
+        "leituras_na": listar_leituras_nivel_agua(sondagem_id, caminho_banco),
+        "poco": obter_poco_monitoramento(sondagem_id, caminho_banco),
+        "intervalos_construtivos": listar_intervalos_construtivos(sondagem_id, caminho_banco),
+        "desenvolvimento": obter_desenvolvimento(sondagem_id, caminho_banco),
+        "leituras_desenvolvimento": listar_leituras_desenvolvimento(sondagem_id, caminho_banco),
+        "fotos": listar_fotos_sondagem(sondagem_id, caminho_banco, incluir_conteudo=True),
+    }
+
+
 TABELAS_OBRIGATORIAS_BANCO = {
     "projetos",
     "sondagens",
@@ -2066,6 +3147,17 @@ def obter_resumo_banco(
             "intervalos_campo": int(
                 conexao.execute(
                     "SELECT COUNT(*) FROM rascunhos_camadas"
+                ).fetchone()[0]
+            ),
+            "pocos": int(
+                conexao.execute("SELECT COUNT(*) FROM pocos_monitoramento").fetchone()[0]
+            ),
+            "fotos": int(
+                conexao.execute("SELECT COUNT(*) FROM fotos_sondagem").fetchone()[0]
+            ),
+            "desenvolvimentos": int(
+                conexao.execute(
+                    "SELECT COUNT(*) FROM desenvolvimentos_poco WHERE realizado = 1"
                 ).fetchone()[0]
             ),
         }

@@ -998,3 +998,526 @@ def criar_secao_hidroestratigrafica(
     figura.update_xaxes(showgrid=True, gridcolor="#E5E7E9")
     figura.update_yaxes(showgrid=True, gridcolor="#E5E7E9")
     return figura
+
+
+CORES_COMPONENTES_CONSTRUTIVOS = {
+    "Tubo cego": {"cor": "#ECF0F1", "linha": "#1F618D", "padrao": ""},
+    "Seção filtrante": {"cor": "#85C1E9", "linha": "#1F618D", "padrao": "-"},
+    "Pré-filtro": {"cor": "#F7DC6F", "linha": "#B7950B", "padrao": "."},
+    "Selo de bentonita": {"cor": "#82E0AA", "linha": "#1E8449", "padrao": "x"},
+    "Cimentação": {"cor": "#B3B6B7", "linha": "#626567", "padrao": "+"},
+    "Fundo / sedimentador": {"cor": "#5D6D7E", "linha": "#273746", "padrao": "|"},
+}
+
+
+def _adicionar_linha_horizontal_dominos(
+    figura: go.Figure,
+    profundidade: float,
+    referencias: list[tuple[str, str]],
+    cor: str,
+    tracejado: str = "dash",
+    largura: float = 2.0,
+) -> None:
+    """Desenha a mesma linha horizontal em diferentes subgráficos."""
+    for xref, yref in referencias:
+        figura.add_shape(
+            type="line",
+            x0=0,
+            x1=1,
+            y0=profundidade,
+            y1=profundidade,
+            xref=xref,
+            yref=yref,
+            line=dict(color=cor, width=largura, dash=tracejado),
+            layer="above",
+        )
+
+
+def criar_perfil_construtivo(
+    sondagem: dict[str, Any],
+    camadas: pd.DataFrame,
+    poco: dict[str, Any] | None,
+    intervalos: pd.DataFrame,
+) -> go.Figure:
+    """Gera perfil litológico e construtivo do poço em uma única imagem."""
+    profundidade_sondagem = float(sondagem.get("profundidade_total") or 0)
+    profundidade_poco = (
+        float(poco.get("profundidade_poco") or 0) if poco else profundidade_sondagem
+    )
+    profundidade_total = max(profundidade_sondagem, profundidade_poco, 0.1)
+    quantidade_intervalos = max(len(intervalos), 1)
+    altura_grafico = max(620, min(1180, int(profundidade_total * 27)))
+    altura_tabela = max(230, min(900, 95 + quantidade_intervalos * 52))
+    altura_total = altura_grafico + altura_tabela + 130
+    fracao_grafico = altura_grafico / (altura_grafico + altura_tabela)
+
+    figura = make_subplots(
+        rows=2,
+        cols=2,
+        specs=[
+            [{"type": "xy"}, {"type": "xy"}],
+            [{"type": "table", "colspan": 2}, None],
+        ],
+        horizontal_spacing=0.09,
+        vertical_spacing=0.08,
+        column_widths=[0.42, 0.58],
+        row_heights=[fracao_grafico, 1 - fracao_grafico],
+        subplot_titles=("Coluna litológica", "Perfil construtivo do poço"),
+    )
+
+    classificacoes_na_legenda: set[str] = set()
+    if camadas.empty:
+        figura.add_annotation(
+            text="Perfil litológico não cadastrado",
+            x=0.5,
+            y=0.5,
+            xref="x domain",
+            yref="y domain",
+            showarrow=False,
+        )
+    else:
+        for _, camada in camadas.sort_values("profundidade_inicial").iterrows():
+            inicio = float(camada["profundidade_inicial"])
+            final = float(camada["profundidade_final"])
+            espessura = final - inicio
+            centro = (inicio + final) / 2
+            classificacao = str(camada["classificacao"])
+            estilo = PADROES_ABNT.get(
+                classificacao,
+                {"cor": "#D5D8DC", "padrao": ""},
+            )
+            mostrar = classificacao not in classificacoes_na_legenda
+            classificacoes_na_legenda.add(classificacao)
+            figura.add_trace(
+                go.Bar(
+                    x=[1.0],
+                    y=[centro],
+                    width=[espessura],
+                    base=0,
+                    orientation="h",
+                    name=classificacao,
+                    legendgroup=f"litologia_{classificacao}",
+                    showlegend=mostrar,
+                    marker_color=estilo["cor"],
+                    marker_line_color="#1F1F1F",
+                    marker_line_width=1,
+                    marker_pattern_shape=_padrao_nativo_plotly(estilo["padrao"]),
+                    marker_pattern_fillmode="overlay",
+                    marker_pattern_fgcolor="#111111",
+                    marker_pattern_solidity=0.18,
+                    customdata=[
+                        [
+                            inicio,
+                            final,
+                            camada.get("descricao_tatil_visual", ""),
+                            camada.get("tipo_aquifero", ""),
+                        ]
+                    ],
+                    hovertemplate=(
+                        "<b>%{fullData.name}</b><br>"
+                        "Intervalo: %{customdata[0]:.2f}-%{customdata[1]:.2f} m<br>"
+                        "Descrição: %{customdata[2]}<br>"
+                        "Unidade: %{customdata[3]}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=1,
+            )
+            if estilo["padrao"] == "o":
+                _adicionar_circulos_silte_perfil(figura, inicio, final, coluna=1)
+
+    componentes_na_legenda: set[str] = set()
+    if poco is None:
+        figura.add_annotation(
+            text="Dados construtivos não cadastrados",
+            x=0.5,
+            y=0.5,
+            xref="x2 domain",
+            yref="y2 domain",
+            showarrow=False,
+            font=dict(color="#6C757D"),
+        )
+    else:
+        # Materiais do espaço anular são desenhados primeiro, atrás da coluna do poço.
+        ordem_componentes = [
+            "Cimentação",
+            "Selo de bentonita",
+            "Pré-filtro",
+            "Tubo cego",
+            "Seção filtrante",
+            "Fundo / sedimentador",
+        ]
+        intervalos_ordenados = intervalos.copy()
+        if not intervalos_ordenados.empty:
+            intervalos_ordenados["_ordem"] = intervalos_ordenados["componente"].map(
+                {nome: indice for indice, nome in enumerate(ordem_componentes)}
+            ).fillna(99)
+            intervalos_ordenados = intervalos_ordenados.sort_values(
+                ["_ordem", "profundidade_inicial"]
+            )
+
+        for _, intervalo in intervalos_ordenados.iterrows():
+            componente = str(intervalo["componente"])
+            inicio = float(intervalo["profundidade_inicial"])
+            final = float(intervalo["profundidade_final"])
+            espessura = final - inicio
+            centro = (inicio + final) / 2
+            estilo = CORES_COMPONENTES_CONSTRUTIVOS.get(
+                componente,
+                {"cor": "#D5D8DC", "linha": "#626567", "padrao": ""},
+            )
+            tubular = componente in {
+                "Tubo cego",
+                "Seção filtrante",
+                "Fundo / sedimentador",
+            }
+            largura_barra = 0.24 if tubular else 0.74
+            centro_x = 0.50
+            mostrar = componente not in componentes_na_legenda
+            componentes_na_legenda.add(componente)
+            figura.add_trace(
+                go.Bar(
+                    x=[largura_barra],
+                    y=[centro],
+                    width=[espessura],
+                    base=centro_x - largura_barra / 2,
+                    orientation="h",
+                    name=componente,
+                    legendgroup=f"construcao_{componente}",
+                    showlegend=mostrar,
+                    marker_color=estilo["cor"],
+                    marker_line_color=estilo["linha"],
+                    marker_line_width=1.4,
+                    marker_pattern_shape=_padrao_nativo_plotly(estilo["padrao"]),
+                    marker_pattern_fillmode="overlay",
+                    marker_pattern_fgcolor="#273746",
+                    marker_pattern_solidity=0.16,
+                    customdata=[
+                        [
+                            inicio,
+                            final,
+                            intervalo.get("material", ""),
+                            intervalo.get("especificacao", ""),
+                            intervalo.get("diametro_mm"),
+                            intervalo.get("abertura_ranhura_mm"),
+                            intervalo.get("granulometria", ""),
+                        ]
+                    ],
+                    hovertemplate=(
+                        "<b>%{fullData.name}</b><br>"
+                        "Intervalo: %{customdata[0]:.2f}-%{customdata[1]:.2f} m<br>"
+                        "Material: %{customdata[2]}<br>"
+                        "Especificação: %{customdata[3]}<br>"
+                        "Diâmetro: %{customdata[4]} mm<br>"
+                        "Ranhura: %{customdata[5]} mm<br>"
+                        "Granulometria: %{customdata[6]}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=2,
+            )
+
+        # Linha central ajuda a identificar o eixo do revestimento.
+        figura.add_shape(
+            type="line",
+            x0=0.5,
+            x1=0.5,
+            y0=0,
+            y1=profundidade_poco,
+            xref="x2",
+            yref="y2",
+            line=dict(color="#17202A", width=1, dash="dot"),
+            layer="above",
+        )
+
+        if bool(poco.get("camara_calcada")):
+            figura.add_shape(
+                type="rect",
+                x0=0.20,
+                x1=0.80,
+                y0=-0.55,
+                y1=-0.03,
+                xref="x2",
+                yref="y2",
+                fillcolor="#7B7D7D",
+                line=dict(color="#424949", width=1.4),
+            )
+            figura.add_annotation(
+                x=0.5,
+                y=-0.29,
+                xref="x2",
+                yref="y2",
+                text="Câmara de calçada",
+                showarrow=False,
+                font=dict(size=10, color="#FFFFFF"),
+            )
+
+        figura.add_annotation(
+            x=0.98,
+            y=0,
+            xref="x2",
+            yref="y2",
+            text=(
+                f"Prof. do poço: {profundidade_poco:.2f} m<br>"
+                f"Ø revestimento: {poco.get('diametro_revestimento_mm') or '-'} mm"
+            ),
+            showarrow=False,
+            xanchor="right",
+            yanchor="bottom",
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#AAB7B8",
+            borderwidth=1,
+            font=dict(size=10),
+        )
+
+    nivel_bruto = sondagem.get("nivel_agua_estatico")
+    if nivel_bruto is not None and not pd.isna(nivel_bruto):
+        nivel = min(max(float(nivel_bruto), 0.0), profundidade_total)
+        _adicionar_linha_horizontal_dominos(
+            figura,
+            nivel,
+            [("x domain", "y"), ("x2 domain", "y2")],
+            cor="#C0392B",
+            tracejado="dash",
+            largura=2,
+        )
+        figura.add_annotation(
+            x=0.02,
+            y=nivel,
+            xref="x2 domain",
+            yref="y2",
+            text=f"NA = {nivel:.2f} m",
+            showarrow=False,
+            xanchor="left",
+            yanchor="bottom",
+            bgcolor="rgba(255,255,255,0.90)",
+            bordercolor="#C0392B",
+            borderwidth=1,
+            font=dict(size=10, color="#922B21"),
+        )
+
+    # Superfície do terreno.
+    _adicionar_linha_horizontal_dominos(
+        figura,
+        0.0,
+        [("x domain", "y"), ("x2 domain", "y2")],
+        cor="#784212",
+        tracejado="solid",
+        largura=2.5,
+    )
+
+    figura.update_xaxes(
+        range=[0, 1.0],
+        showticklabels=False,
+        showgrid=False,
+        zeroline=False,
+        fixedrange=True,
+        title_text="Litologia",
+        row=1,
+        col=1,
+    )
+    figura.update_xaxes(
+        range=[0, 1.0],
+        showticklabels=False,
+        showgrid=False,
+        zeroline=False,
+        fixedrange=True,
+        title_text="Elementos construtivos",
+        row=1,
+        col=2,
+    )
+    for coluna in (1, 2):
+        figura.update_yaxes(
+            range=[profundidade_total + 0.35, -0.75],
+            autorange=False,
+            title_text="Profundidade (m)" if coluna == 1 else None,
+            showgrid=True,
+            gridcolor="#E5E7E9",
+            row=1,
+            col=coluna,
+        )
+
+    if intervalos.empty:
+        valores_tabela = [["-"], ["-"], ["-"], ["-"], ["-"]]
+        preenchimentos = ["#F8F9F9"]
+    else:
+        ordenados_tabela = intervalos.sort_values(
+            ["profundidade_inicial", "componente"]
+        )
+        valores_tabela = [
+            ordenados_tabela["componente"].astype(str).tolist(),
+            [
+                f"{float(linha['profundidade_inicial']):.2f}-{float(linha['profundidade_final']):.2f} m"
+                for _, linha in ordenados_tabela.iterrows()
+            ],
+            [_quebrar_texto(valor, 34) for valor in ordenados_tabela["material"].tolist()],
+            [_quebrar_texto(valor, 46) for valor in ordenados_tabela["especificacao"].tolist()],
+            [
+                (
+                    f"Ø {_texto_plotly(linha.get('diametro_mm'))} mm | "
+                    f"ranhura {_texto_plotly(linha.get('abertura_ranhura_mm'))} mm | "
+                    f"{_quebrar_texto(linha.get('granulometria'), 24)}"
+                )
+                for _, linha in ordenados_tabela.iterrows()
+            ],
+        ]
+        preenchimentos = [
+            "#F8F9F9" if indice % 2 == 0 else "#EEF2F3"
+            for indice in range(len(ordenados_tabela))
+        ]
+
+    figura.add_trace(
+        go.Table(
+            columnwidth=[0.18, 0.14, 0.21, 0.27, 0.20],
+            header=dict(
+                values=[
+                    "<b>Componente</b>",
+                    "<b>Intervalo</b>",
+                    "<b>Material</b>",
+                    "<b>Especificação</b>",
+                    "<b>Dimensões / granulometria</b>",
+                ],
+                fill_color="#D6EAF8",
+                line_color="#AAB7B8",
+                align=["left", "center", "left", "left", "left"],
+                font=dict(size=10, color="#1B2631"),
+                height=32,
+            ),
+            cells=dict(
+                values=valores_tabela,
+                fill_color=[preenchimentos] * 5,
+                line_color="#D5D8DC",
+                align=["left", "center", "left", "left", "left"],
+                font=dict(size=9, color="#1B2631"),
+                height=47,
+            ),
+        ),
+        row=2,
+        col=1,
+    )
+
+    epsg = int(sondagem.get("crs_entrada") or 4674)
+    figura.update_layout(
+        title=dict(
+            text=(
+                f"Perfil construtivo do poço — {sondagem.get('nome_furo', '')}"
+                f"<br><sup>Projeto: {sondagem.get('projeto_nome', '')} | "
+                f"CRS de entrada: EPSG:{epsg}</sup>"
+            ),
+            x=0.5,
+            xanchor="center",
+            y=0.975,
+            yanchor="top",
+            font=dict(size=20),
+        ),
+        height=altura_total,
+        barmode="overlay",
+        bargap=0,
+        template="plotly_white",
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.96,
+            xanchor="left",
+            x=1.01,
+            bgcolor="rgba(255,255,255,0.90)",
+            bordercolor="#D5D8DC",
+            borderwidth=1,
+            font=dict(size=9),
+        ),
+        margin=dict(l=74, r=250, t=145, b=35),
+    )
+    return figura
+
+
+def _texto_plotly(valor: Any) -> str:
+    """Formata valores opcionais usados em células da tabela Plotly."""
+    if valor is None:
+        return "-"
+    try:
+        if pd.isna(valor):
+            return "-"
+    except (TypeError, ValueError):
+        pass
+    try:
+        return f"{float(valor):.3g}"
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def criar_grafico_desenvolvimento(leituras: pd.DataFrame) -> go.Figure:
+    """Apresenta a evolução de vazão, turbidez e NA durante o desenvolvimento."""
+    figura = make_subplots(specs=[[{"secondary_y": True}]])
+    if leituras.empty:
+        figura.add_annotation(
+            text="Sem leituras cronológicas do desenvolvimento",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(color="#6C757D"),
+        )
+    else:
+        ordenadas = leituras.sort_values("tempo_min")
+        if ordenadas["turbidez_ntu"].notna().any():
+            figura.add_trace(
+                go.Scatter(
+                    x=ordenadas["tempo_min"],
+                    y=ordenadas["turbidez_ntu"],
+                    mode="lines+markers",
+                    name="Turbidez (NTU)",
+                    line=dict(width=2.2),
+                ),
+                secondary_y=False,
+            )
+        if ordenadas["vazao_l_min"].notna().any():
+            figura.add_trace(
+                go.Scatter(
+                    x=ordenadas["tempo_min"],
+                    y=ordenadas["vazao_l_min"],
+                    mode="lines+markers",
+                    name="Vazão (L/min)",
+                    line=dict(width=2.2, dash="dot"),
+                ),
+                secondary_y=False,
+            )
+        if ordenadas["nivel_agua_m"].notna().any():
+            figura.add_trace(
+                go.Scatter(
+                    x=ordenadas["tempo_min"],
+                    y=ordenadas["nivel_agua_m"],
+                    mode="lines+markers",
+                    name="NA (m)",
+                    line=dict(width=2.2, dash="dash"),
+                ),
+                secondary_y=True,
+            )
+    figura.update_xaxes(title_text="Tempo acumulado (min)")
+    figura.update_yaxes(title_text="Turbidez / vazão", secondary_y=False)
+    figura.update_yaxes(
+        title_text="Profundidade do NA (m)",
+        autorange="reversed",
+        secondary_y=True,
+    )
+    figura.update_layout(
+        title=dict(
+            text="Evolução do desenvolvimento do poço",
+            x=0.5,
+            xanchor="center",
+            y=0.98,
+            yanchor="top",
+        ),
+        template="plotly_white",
+        height=520,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(255,255,255,0.85)",
+        ),
+        margin=dict(l=70, r=80, t=90, b=115),
+    )
+    return figura
